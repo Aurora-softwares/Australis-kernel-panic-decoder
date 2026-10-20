@@ -10,6 +10,12 @@ import { lookupKnownIssue } from './lib/known-issues.js'
 import { assessReport } from './lib/validation.js'
 import { DEFAULT_CONTEXT, recoveryPlan } from './lib/recovery.js'
 import { safeDiagnosticText, technicalDiagnosticText } from './lib/reports.js'
+import { exceptionReference, exceptionByVector } from './lib/exception-reference.js'
+import { decodePageFault } from './lib/page-fault.js'
+import { localCrashSignature } from './lib/crash-signature.js'
+import { identifyBootStage } from './lib/boot-stage.js'
+import { historyEnabled, setHistoryEnabled, loadHistory, recordHistory, clearHistory, signatureOccurrences } from './lib/history.js'
+import { redactLog, attachmentInstructions } from './lib/attachments.js'
 
 const mode = ref('camera')
 const theme = ref('auto')
@@ -36,6 +42,29 @@ const distinctIssue = ref(false)
 const privateExportApproved = ref(false)
 const knownResult = ref({ status: 'idle', match: null })
 const knownStatus = ref('idle')
+const vectorQuery = ref('')
+const selectedVector = ref(14)
+const historyConsent = ref(false)
+const historyEntries = ref([])
+const isOnline = ref(typeof navigator === 'undefined' ? true : navigator.onLine)
+const deferredInstall = ref(null)
+const isStandalone = ref(false)
+const attachmentName = ref('')
+const attachmentType = ref('')
+const attachmentPreview = ref('')
+const attachmentError = ref('')
+const attachmentImage = ref('')
+const attachmentPicker = ref(null)
+const attachmentReviewed = ref(false)
+const attachmentCopied = ref(false)
+const signature = computed(() => localCrashSignature(result.value))
+const currentOccurrences = computed(() => signatureOccurrences(historyEntries.value, signature.value))
+const stageInfo = computed(() => identifyBootStage(result.value, context.value))
+const faultDetails = computed(() => decodePageFault(result.value))
+const selectedException = computed(() => exceptionByVector(selectedVector.value))
+const referenceMatches = computed(() => exceptionReference.filter(item =>
+  `${item.vector} ${item.hex} ${item.name} ${item.explanation}`.toLowerCase().includes(vectorQuery.value.toLowerCase().trim())))
+const attachmentGuidance = attachmentInstructions()
 const plain = computed(() => result.value ? publicDiagnosis(result.value) : null)
 const newIssue = computed(() => newIssueUrl(result.value, sourceReport.value, includePublicSource.value, context.value))
 const assessment = computed(() => assessReport(result.value))
@@ -67,7 +96,75 @@ onMounted(() => {
     if (['auto', 'light', 'dark'].includes(saved)) theme.value = saved
   } catch { /* Preference storage is optional. */ }
   document.documentElement.dataset.theme = theme.value
+  try {
+    historyConsent.value = historyEnabled(localStorage)
+    historyEntries.value = loadHistory(localStorage)
+  } catch { /* Storage disabled or unavailable. */ }
+  isOnline.value = navigator.onLine
+  isStandalone.value = window.matchMedia('(display-mode: standalone)').matches || !!navigator.standalone
+  window.addEventListener('online', updateConnectivity)
+  window.addEventListener('offline', updateConnectivity)
+  window.addEventListener('beforeinstallprompt', offerInstall)
+  window.addEventListener('appinstalled', markInstalled)
 })
+
+function updateConnectivity() { isOnline.value = navigator.onLine }
+function offerInstall(event) { event.preventDefault(); deferredInstall.value = event }
+function markInstalled() { deferredInstall.value = null; isStandalone.value = true }
+async function installApp() {
+  if (!deferredInstall.value) return
+  const prompt = deferredInstall.value
+  deferredInstall.value = null
+  await prompt.prompt()
+}
+function toggleHistory(event) {
+  const requested = !!event.target.checked
+  let success = false
+  try { success = setHistoryEnabled(localStorage, requested) } catch { /* unavailable */ }
+  historyConsent.value = success && requested
+  historyEntries.value = historyConsent.value ? loadHistory(localStorage) : []
+  if (!success) error.value = 'This browser does not allow local history storage.'
+}
+function eraseHistory() {
+  clearHistory(localStorage)
+  historyEntries.value = []
+}
+function clearAttachment() {
+  if (attachmentImage.value) URL.revokeObjectURL(attachmentImage.value)
+  attachmentImage.value = ''
+  attachmentName.value = ''
+  attachmentType.value = ''
+  attachmentPreview.value = ''
+  attachmentError.value = ''
+  attachmentReviewed.value = false
+  attachmentCopied.value = false
+  if (attachmentPicker.value) attachmentPicker.value.value = ''
+}
+async function previewAttachment(file) {
+  clearAttachment()
+  if (!file) return
+  if (file.size > 256 * 1024) {
+    attachmentError.value = 'Please choose a screenshot or log under 256 KB. Trim large logs to the relevant lines.'
+    return
+  }
+  attachmentName.value = file.name.slice(0, 120)
+  if (['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    attachmentType.value = 'image'
+    attachmentImage.value = URL.createObjectURL(file)
+  } else if (/\.(log|txt)$/i.test(file.name) || file.type === 'text/plain') {
+    attachmentType.value = 'text'
+    try { attachmentPreview.value = redactLog(await file.text()) } catch { attachmentError.value = 'Could not read this file.' }
+  } else {
+    attachmentError.value = 'Choose a PNG, JPG, WebP, TXT or LOG file.'
+  }
+}
+async function copyAttachmentPreview() {
+  if (attachmentType.value !== 'text' || !attachmentReviewed.value) return
+  try {
+    await navigator.clipboard.writeText(attachmentPreview.value)
+    attachmentCopied.value = true
+  } catch { attachmentError.value = 'Copying is not available. Select the preview text manually instead.' }
+}
 
 function chooseTheme(value) {
   if (!['auto', 'light', 'dark'].includes(value)) return
@@ -170,6 +267,9 @@ function explain(text) {
     void findSource(result.value)
     void findKnownIssue(result.value)
     input.value = text
+    if (historyConsent.value && result.value?.valid) {
+      historyEntries.value = recordHistory(localStorage, result.value)
+    }
     stopCamera()
     if (window.matchMedia('(max-width: 800px)').matches) {
       void nextTick(() => reportPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
@@ -202,6 +302,7 @@ function reset() {
   resetKnownIssue()
   context.value = { ...DEFAULT_CONTEXT }
   privateExportApproved.value = false
+  clearAttachment()
   input.value = ''
   result.value = null
   fileName.value = ''
@@ -276,6 +377,11 @@ onBeforeUnmount(() => {
   resetSource()
   resetKnownIssue()
   if (copyTimer) clearTimeout(copyTimer)
+  clearAttachment()
+  window.removeEventListener('online', updateConnectivity)
+  window.removeEventListener('offline', updateConnectivity)
+  window.removeEventListener('beforeinstallprompt', offerInstall)
+  window.removeEventListener('appinstalled', markInstalled)
 })
 
 async function useImage(file) {
@@ -469,6 +575,13 @@ function exportPrivate() {
               <h4>{{ knownResult.match.title }}</h4>
               <p>{{ knownResult.match.summary }}</p>
               <p v-if="knownResult.match.recovery"><strong>Published guidance:</strong> {{ knownResult.match.recovery }}</p>
+              <div v-if="knownResult.match.status === 'resolved'" class="published-fix">
+                <strong>{{ knownResult.match.fix ? 'Maintainer-published fix information' : 'Issue marked resolved' }}</strong>
+                <p v-if="knownResult.match.fix?.instructions">{{ knownResult.match.fix.instructions }}</p>
+                <a v-if="knownResult.match.fix?.releaseUrl" :href="knownResult.match.fix.releaseUrl" target="_blank" rel="noopener noreferrer">View linked release ↗</a>
+                <a v-if="knownResult.match.fix?.commitUrl" :href="knownResult.match.fix.commitUrl" target="_blank" rel="noopener noreferrer">View linked fix commit ↗</a>
+                <p v-if="!knownResult.match.fix">No verified fix link has been published in the diagnostic database. Closing an issue does not automatically mean the crash is fixed.</p>
+              </div>
               <a :href="knownResult.match.url" target="_blank" rel="noopener noreferrer">Read verified GitHub issue #{{ knownResult.match.issue }} ↗</a>
               <p class="field-note">This is a maintainer-curated signature match, not independent proof of the same root cause.</p>
             </div>
@@ -493,6 +606,7 @@ function exportPrivate() {
             <div class="answer-box"><strong>Recommended next steps</strong>
               <ol class="recovery-steps"><li v-for="(step, index) in recoverySteps" :key="index">{{ step }}</li></ol>
             </div>
+            <div class="stage-hint"><strong>Boot stage:</strong> {{ stageInfo.title }} <p>{{ stageInfo.description }}</p></div>
             <p class="accuracy-note">Confirmed exception ≠ confirmed underlying cause. Restarting does not fix a recurring bug.</p>
 
             <section class="source-lookup" aria-labelledby="source-heading">
@@ -571,6 +685,83 @@ function exportPrivate() {
           </div>
         </section>
       </div>
+
+      <section class="advanced-suite" aria-labelledby="tools-heading">
+        <div class="tools-intro"><span class="eyebrow">OPTIONAL TOOLS</span><h2 id="tools-heading">Explore your diagnostics</h2><p>Useful for learning more or comparing reports. Your QR and technical values stay on this device.</p></div>
+        <div class="tools-grid">
+          <details class="tool-card" id="exception-guide">
+            <summary>CPU exception guide <span>All x86-64 vectors ↗</span></summary>
+            <div class="tool-content">
+              <p>Find out what an error number means. Reserved vectors are clearly marked rather than guessed.</p>
+              <label class="tool-input-label" for="vector-filter">Search exceptions</label>
+              <input id="vector-filter" v-model="vectorQuery" placeholder="e.g. page fault, 14, 0x0E" />
+              <div class="exception-picker"><button v-for="item in referenceMatches" :key="item.vector" type="button" :class="{ current: selectedVector === item.vector }" @click="selectedVector = item.vector">{{ item.hex }} · {{ item.name }}</button></div>
+              <div v-if="selectedException" class="tool-focus"><strong>{{ selectedException.hex }} · {{ selectedException.name }}</strong><p>{{ selectedException.explanation }}</p><p><b>Investigate:</b> {{ selectedException.next }}</p></div>
+              <button v-if="result?.valid && Number.isInteger(result.vector)" type="button" class="text-button" @click="selectedVector = result.vector">Show my error</button>
+            </div>
+          </details>
+          <details class="tool-card" id="page-fault-tool">
+            <summary>Page-fault details <span>Understand memory errors ↗</span></summary>
+            <div class="tool-content">
+              <template v-if="faultDetails">
+                <p v-if="!faultDetails.available">{{ faultDetails.summary }} {{ faultDetails.warning }}</p>
+                <template v-else><p class="tool-focus"><strong>{{ faultDetails.summary }}</strong></p>
+                  <dl class="flag-grid"><div v-for="flag in faultDetails.flags" :key="flag.bit"><dt>Bit {{ flag.bit }} · {{ flag.name }} <span>{{ flag.set ? 'Set' : 'Clear' }}</span></dt><dd>{{ flag.explanation }}</dd></div></dl>
+                  <p v-if="faultDetails.warning" class="field-note">{{ faultDetails.warning }}</p>
+                  <p class="field-note">The CR2 address is available in private technical details above. It is never included in public issue reports.</p>
+                </template>
+              </template>
+              <p v-else>Scan a page-fault QR (exception 0E) to see a breakdown of its CPU error-code bits.</p>
+            </div>
+          </details>
+          <details class="tool-card" id="signature-tool">
+            <summary>Crash signature <span>Compare repeat crashes ↗</span></summary>
+            <div class="tool-content">
+              <template v-if="signature">
+                <p class="signature-code">{{ signature.code }}</p><p>{{ signature.explanation }}</p>
+                <p class="field-note">A comparison fingerprint is not a proof of a known bug and is not automatically sent to GitHub.</p>
+                <p v-if="historyConsent">Saved occurrences with this signature on this browser: <strong>{{ currentOccurrences }}</strong>.</p>
+              </template><p v-else>Scan a panic to generate a local comparison identifier.</p>
+            </div>
+          </details>
+          <details class="tool-card" id="history-tool">
+            <summary>Troubleshooting history <span>Optional and private ↗</span></summary>
+            <div class="tool-content">
+              <label class="share-source-label"><input type="checkbox" :checked="historyConsent" @change="toggleHistory" /> Save brief crash identifiers on this device</label>
+              <p class="field-note">Disabled by default. Stores only a timestamp, error category and derived crash fingerprint (which is still sensitive metadata). Never stores QR images, raw registers, addresses or logs. Limited to 25 entries. Disable to delete.</p>
+              <template v-if="historyConsent">
+                <p v-if="!historyEntries.length">No crashes have been saved yet. New scans will appear here.</p>
+                <ul v-else class="history-list"><li v-for="(entry, index) in historyEntries" :key="`${entry.at}-${index}`"><strong>{{ entry.name }}</strong><small>{{ new Date(entry.at).toLocaleString() }}</small><code>{{ entry.code }}</code></li></ul>
+                <button type="button" class="button button-subtle" @click="eraseHistory">Clear saved history</button>
+              </template>
+            </div>
+          </details>
+          <details class="tool-card" id="attachment-tool">
+            <summary>Prepare attachments safely <span>Review before sharing ↗</span></summary>
+            <div class="tool-content">
+              <p>GitHub issue drafts cannot automatically attach files. This tool previews a screenshot or redacts a text log locally so you can decide what to attach manually.</p>
+              <ul class="tool-guidance"><li v-for="tip in attachmentGuidance" :key="tip">{{ tip }}</li></ul>
+              <label class="tool-input-label" for="attachment-file">Choose a local screenshot or log (max 256 KB)</label>
+              <input id="attachment-file" ref="attachmentPicker" type="file" accept=".txt,.log,.png,.jpg,.jpeg,.webp,text/plain,image/png,image/jpeg,image/webp" @change="previewAttachment($event.target.files?.[0])" />
+              <p v-if="attachmentError" class="notice-error">{{ attachmentError }}</p>
+              <div v-if="attachmentType === 'text'" class="attachment-preview"><strong>Redacted preview: {{ attachmentName }}</strong><pre>{{ attachmentPreview }}</pre><label class="share-source-label"><input v-model="attachmentReviewed" type="checkbox" /> I've checked every line for private information. I understand automatic redaction may miss things.</label><button class="button button-secondary" type="button" :disabled="!attachmentReviewed" @click="copyAttachmentPreview">{{ attachmentCopied ? 'Copied ✓' : 'Copy reviewed text' }}</button></div>
+              <div v-else-if="attachmentType === 'image'" class="attachment-preview"><strong>Local screenshot preview: {{ attachmentName }}</strong><img :src="attachmentImage" alt="Your selected screenshot preview. Inspect it before sharing." /><p class="field-note">This image has NOT been cropped or redacted. Crop or edit it yourself before uploading on GitHub.</p></div>
+              <button v-if="attachmentType" type="button" class="text-button" @click="clearAttachment">Remove preview</button>
+            </div>
+          </details>
+          <details class="tool-card" id="offline-tool">
+            <summary>Install for offline use <span>{{ isStandalone ? 'Installed' : isOnline ? 'Available' : 'Offline' }} ↗</span></summary>
+            <div class="tool-content">
+              <p>Once the site has been loaded successfully over HTTPS, your browser can save its app files. QR decoding, the error reference and local guidance then work without internet access. GitHub issue checks and new source-map downloads require a connection.</p>
+              <p class="connection-pill">{{ isOnline ? 'Online now' : 'Currently offline — local decoding is available if the app has been cached' }}</p>
+              <p v-if="isStandalone">You're using the installed app.</p>
+              <button v-else-if="deferredInstall" class="button button-primary" type="button" @click="installApp">Install Australis Diagnostics</button>
+              <p v-else>To install: open this website in your phone or desktop browser, then choose <strong>Install app</strong> or <strong>Add to Home Screen</strong> from the browser menu, if supported.</p>
+              <p class="field-note">The first visit needs internet access and a browser with PWA support. For dependable offline use, open the site once while connected before relying on it.</p>
+            </div>
+          </details>
+        </div>
+      </section>
 
       <section id="how-to" class="instructions" aria-labelledby="instructions-heading">
         <div class="instructions-heading"><span class="eyebrow">QUICK GUIDE</span><h2 id="instructions-heading">How to use the decoder</h2><p>No account or installation needed.</p></div>

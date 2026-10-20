@@ -5,6 +5,20 @@ const BUILD = /^[a-z0-9][a-z0-9._-]{5,63}$/i
 const VALID_STATUSES = new Set(['known', 'investigating', 'resolved'])
 const ISSUE_SITE = `https://github.com/${PUBLIC_SOURCE_REPO}/issues/`
 const MAX_ITEMS = 500
+const RELEASE = `https://github.com/${PUBLIC_SOURCE_REPO}/releases/tag/`
+const COMMIT = `https://github.com/${PUBLIC_SOURCE_REPO}/commit/`
+
+function safeFix(fix) {
+  if (!fix || typeof fix !== 'object' || Array.isArray(fix)) return null
+  // Maintainer-curated, same-repository URLs only. Do not trust arbitrary links.
+  const release = typeof fix.releaseUrl === 'string' && fix.releaseUrl.startsWith(RELEASE) &&
+    /^https:\/\/github\.com\/Aurora-softwares\/Australis-OS\/releases\/tag\/[a-z0-9._-]{1,80}$/i.test(fix.releaseUrl) ? fix.releaseUrl : null
+  const commit = typeof fix.commitUrl === 'string' && fix.commitUrl.startsWith(COMMIT) &&
+    /^https:\/\/github\.com\/Aurora-softwares\/Australis-OS\/commit\/[0-9a-f]{40}$/i.test(fix.commitUrl) ? fix.commitUrl : null
+  const instructions = typeof fix.instructions === 'string' && fix.instructions.length <= 300 ? fix.instructions : ''
+  if (!release && !commit && !instructions) return null
+  return { releaseUrl: release, commitUrl: commit, instructions }
+}
 
 export function crashSignature(result) {
   if (!result?.valid || !Number.isInteger(result.vector) || result.vector < 0 || result.vector > 255) return null
@@ -30,6 +44,7 @@ function safeItem(item) {
   return {
     signature: item.signature, status: item.status, issue: item.issue,
     title: item.title, summary: item.summary, recovery: item.recovery,
+    fix: item.status === 'resolved' ? safeFix(item.fix) : null,
     url: `${ISSUE_SITE}${item.issue}`,
   }
 }

@@ -52,14 +52,14 @@ const VECTORS = {
 const KEYS = new Set([
   'VECTOR', 'ERROR', 'RIP', 'RSP', 'CR2', 'CS', 'RFLAGS', 'SS', 'RAX', 'RBX', 'RCX', 'RDX',
   'RSI', 'RDI', 'RBP', 'R8', 'R9', 'R10', 'R11', 'R12', 'R13', 'R14', 'R15', 'PID',
-  'PROCESS', 'BUILD', 'KBASE', 'VERSION', 'MESSAGE', 'TIME',
+  'PROCESS', 'BUILD', 'KBASE', 'VERSION', 'MESSAGE', 'TIME', 'STAGE',
 ])
 const ALIASES = {
   V: 'VECTOR', VEC: 'VECTOR', EXCEPTION: 'VECTOR', EXCEPTION_VECTOR: 'VECTOR',
   E: 'ERROR', ERR: 'ERROR', ERROR_CODE: 'ERROR',
   IP: 'RIP', PC: 'RIP', SP: 'RSP', A: 'CR2', FAULT_ADDRESS: 'CR2', ADDRESS: 'CR2',
   M: 'MESSAGE', MSG: 'MESSAGE', REASON: 'MESSAGE',
-  KERNEL: 'VERSION', KERNEL_VERSION: 'VERSION', TIMESTAMP: 'TIME',
+  KERNEL: 'VERSION', KERNEL_VERSION: 'VERSION', TIMESTAMP: 'TIME', BOOT_STAGE: 'STAGE', PHASE: 'STAGE',
   B: 'BUILD', BID: 'BUILD', BUILD_ID: 'BUILD', KB: 'KBASE', BASE: 'KBASE', CODE_BASE: 'KBASE',
 }
 
@@ -110,7 +110,7 @@ function parseJson(raw, fields) {
 }
 
 function parseAustralisText(raw, fields) {
-  const re = /^\s*(VECTOR|ERROR|RIP|RSP|CR2|CS|RFLAGS|SS|RAX|RBX|RCX|RDX|RSI|RDI|RBP|R(?:[89]|1[0-5])|PID|PROCESS|BUILD|KBASE|VERSION|MESSAGE|TIME)\s*[:=]\s*([^\r\n]+)\s*$/gim
+  const re = /^\s*(VECTOR|ERROR|RIP|RSP|CR2|CS|RFLAGS|SS|RAX|RBX|RCX|RDX|RSI|RDI|RBP|R(?:[89]|1[0-5])|PID|PROCESS|BUILD|KBASE|VERSION|MESSAGE|TIME|STAGE|BOOT_STAGE)\s*[:=]\s*([^\r\n]+)\s*$/gim
   let found = false
   for (const match of raw.matchAll(re)) {
     assign(fields, match[1], match[2])

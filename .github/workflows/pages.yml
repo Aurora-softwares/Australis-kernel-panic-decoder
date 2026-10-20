@@ -2,7 +2,8 @@ name: Deploy GitHub Pages
 
 on:
   push:
-    branches: [Development]
+    branches: [Release]
+  # Manual publishing is allowed only when this workflow is run from Release.
   workflow_dispatch:
 
 permissions:
@@ -16,6 +17,8 @@ concurrency:
 
 jobs:
   build:
+    # Protect against a manual dispatch from Development or any other branch.
+    if: github.ref == 'refs/heads/Release'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -49,6 +52,7 @@ jobs:
         with:
           path: ./dist
   deploy:
+    if: github.ref == 'refs/heads/Release'
     runs-on: ubuntu-latest
     needs: build
     environment:

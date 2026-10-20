@@ -1,8 +1,20 @@
 # Australis Crash Diagnostics
 
-Version 2.4. A small, mobile-friendly Vue 3 application for **public** Australis OS kernel panic diagnosis. It reads a panic QR code or text locally, provides a safe plain-English explanation, and can optionally check public [Australis OS GitHub issues](https://github.com/Aurora-softwares/Australis-OS/issues) for potentially related reports.
+Version 2.5. A small, mobile-friendly Vue 3 application for **public** Australis OS kernel panic diagnosis. It reads a panic QR code or text locally, provides a safe plain-English explanation, and can optionally check public [Australis OS GitHub issues](https://github.com/Aurora-softwares/Australis-OS/issues) for potentially related reports.
 
 ## Features
+
+### Priority 2 — optional diagnostics
+
+- Full, searchable x86-64 exception reference for vectors 0–31 (plus Australis' unexpected-vector sentinel).
+- Page-fault error-code bit explanations, including present/protection, read/write, supervisor/user and instruction fetch.
+- Local deterministic crash fingerprint to compare repeated crashes; the fingerprint does **not** establish identical root causes.
+- Boot-stage display when stage metadata is explicitly supplied, or a clearly labelled estimate based on the visitor's answers. AU1 currently has no stage field.
+- Opt-in local crash history, off by default, limited to 25 minimal entries, deletable at any time. Crash text and addresses are never stored.
+- PWA installation (browser support varies) with a pre-cached app shell for offline QR decoding. GitHub lookups still require internet.
+- Maintainer-published known-fix links for curated resolved issues, restricted to the Australis OS GitHub repository.
+- Screenshot/serial-log review tool with best-effort text redaction. Visitors must inspect and manually attach data on GitHub; the site never uploads it.
+
 
 - **Three simple inputs:** scan live QR through the camera, upload a screenshot / PGM file, or paste panic text. A sample report and sample QR are included.
 - **Robust report quality checks:** warns when QR contents are unrelated, malformed, unsupported or missing RIP; offers a retry route rather than guessing.
@@ -52,12 +64,32 @@ npm run build  # production Vue bundle
 npm run preview
 ```
 
-## GitHub Pages
+## GitHub Pages — Release branch only
 
 1. Create a public GitHub repository, e.g. `Australis-Panic-Decoder`.
-2. Upload the contents of this folder to the repository root and push to `main`.
-3. Open **Settings → Pages → Build and deployment**, and select **GitHub Actions**.
-4. The supplied workflow tests, builds, and deploys the app. The resulting URL will be similar to `https://aurora-softwares.github.io/Australis-Panic-Decoder/`.
+2. Put the project files in your **`Development`** branch and create a separate branch named **`Release`** (capital `R`; branch names are case sensitive). The `Release` branch must contain `.github/workflows/pages.yml` and the website files.
+3. Open **Settings → Pages → Build and deployment**, and select **GitHub Actions** (NOT “Deploy from a branch”).
+4. Merge tested changes from `Development` into `Release` when ready to publish. **Only a push to `Release` can deploy this website**. Pushing to `Development` runs a separate test/build check, but **never publishes**; pull requests targeting `Release` are checked the same way. Manual deployment runs from non-`Release` branches are blocked by an explicit branch check.
+5. The resulting URL will be similar to `https://aurora-softwares.github.io/Australis-Panic-Decoder/`.
+
+**Publishing example:**
+
+```bash
+git checkout Development
+# ... make changes, commit and push ...
+git push origin Development
+# Development tests run; public website remains unchanged.
+
+# When satisfied, merge your development changes for publication:
+git checkout Release
+git pull --ff-only origin Release
+git merge Development
+git push origin Release
+# GitHub Actions tests, builds and publishes this revision.
+```
+
+If creating `Release` for the first time, create it from the commit that already contains the website and the Pages workflow. In GitHub, keep the **Pages source set to GitHub Actions** and remove/disable any other legacy Pages deployment workflows that still publish from `main` or `Development`. An initial push to `Release` will publish the site once; subsequent `Development` commits are isolated until merged.
+
 
 The workflow automatically sets Vite's base path for repository Pages hosting. The GitHub issue destination is currently configured to **`Aurora-softwares/Australis-OS`**, in `src/lib/issues.js`. Change that single constant if you later move public issues to another repository.
 

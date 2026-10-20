@@ -15,6 +15,8 @@ export default defineConfig({
         const assets = [
           ...Object.keys(bundle),
           'favicon.svg',
+          'icon-192.png',
+          'icon-512.png',
           'manifest.webmanifest',
           'sample-panic-qr.png',
           'sample-au1-qr.png',
