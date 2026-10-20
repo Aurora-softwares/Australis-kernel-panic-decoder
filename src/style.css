@@ -355,3 +355,13 @@ textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
 .published-fix a { display: inline-block; margin: 8px 15px 0 0; }
 @media (max-width: 750px) { .tools-grid { grid-template-columns: 1fr; } }
 @media (max-width: 480px) { .tool-card > summary { align-items: flex-start; } .tool-card > summary span { max-width: 42%; white-space: normal; } }
+
+/* PWA update notice. It never blocks the scanner or dismisses a crash. */
+.website-update { position: fixed; z-index: 100; right: 22px; bottom: max(22px, env(safe-area-inset-bottom)); display: flex; gap: 13px; width: min(410px, calc(100% - 28px)); padding: 18px; background: var(--panel); border: 1px solid var(--line-strong); box-shadow: 0 18px 65px rgba(0,0,0,.2); border-radius: 15px; color: var(--text); }
+.website-update-icon { display: grid; place-items: center; flex: 0 0 38px; height: 38px; border-radius: 12px; background: var(--accent-tint); color: var(--accent); font-size: 24px; font-weight: 750; }
+.website-update-content { min-width: 0; }
+.website-update h2 { font-size: 16px; letter-spacing: -.025em; color: var(--text-strong); margin: 1px 0 5px; }
+.website-update p { font-size: 12.5px; line-height: 1.6; color: var(--muted); margin: 0 0 13px; }
+.website-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.website-update-actions .button { font-size: 12px; min-height: 40px; padding-inline: 15px; }
+@media (max-width: 520px) { .website-update { left: 14px; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); width: auto; padding: 15px; } }

@@ -42,6 +42,7 @@ Identify the actual source code, correlate crashes with known defects, and deter
 | 🔴 | Essential | **Intelligent known-issue matching** | Match crashes using verified signatures, source locations and build information. |
 | 🔴 | Essential | **Automated fix detection** | Identify whether a verified fix exists in a newer kernel build. |
 | 🔴 | Essential | **Extended QR diagnostics** | Introduce an optional AU2 format while retaining support for AU1. |
+| 🔴 | Essential | **Diagnostic integrity verification** | When someone scans a QR code, the website should be able to establish whether the information is complete and internally consistent. |
 | 🔴 | Important | **Crash context analysis** | Identify whether a crash happened during boot, driver initialisation, application execution or shutdown. |
 | 🔴 | Important | **Developer investigation mode** | Provide more advanced register analysis, source-code inspection and debugging commands. |
 | 🔴 | Important | **Crash correlation** | Compare multiple reports to identify recurring failures and likely related bugs. |

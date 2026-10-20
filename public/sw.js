@@ -1,5 +1,5 @@
 /* Only publicly published same-origin app assets are cached. Never cache scans, user uploads or raw panic text. */
-const CACHE = 'australis-panic-decoder-v10'
+const CACHE = 'australis-panic-decoder-__BUILD_ID__'
 const PREFIX = 'australis-panic-decoder-'
 const ROOT = new URL('./', self.registration.scope).href
 const knownDB = `${ROOT}known-issues/index.json`
@@ -29,6 +29,12 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return
   const url = new URL(event.request.url)
   if (url.origin !== self.location.origin || !url.href.startsWith(ROOT)) return
+  // Never serve stale release metadata from the PWA cache. Query strings
+  // allow even an older service worker to fetch the latest published release.
+  if (url.pathname === new URL('version.json', ROOT).pathname) {
+    event.respondWith(fetch(event.request, { cache: 'no-store' }))
+    return
+  }
   // Browser navigation: update when online, fall back to the cached app shell.
   if (event.request.mode === 'navigate') {
     event.respondWith(fetch(event.request).then(response => {

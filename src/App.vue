@@ -16,6 +16,7 @@ import { localCrashSignature } from './lib/crash-signature.js'
 import { identifyBootStage } from './lib/boot-stage.js'
 import { historyEnabled, setHistoryEnabled, loadHistory, recordHistory, clearHistory, signatureOccurrences } from './lib/history.js'
 import { redactLog, attachmentInstructions } from './lib/attachments.js'
+import { fetchPublishedBuild, isNewBuild, applyWebsiteUpdate } from './lib/update-check.js'
 
 const mode = ref('camera')
 const theme = ref('auto')
@@ -57,6 +58,16 @@ const attachmentImage = ref('')
 const attachmentPicker = ref(null)
 const attachmentReviewed = ref(false)
 const attachmentCopied = ref(false)
+const websiteVersion = __APP_VERSION__
+const websiteBuild = __APP_BUILD_ID__
+const availableUpdate = ref(null)
+const updatingWebsite = ref(false)
+const updateDismissed = ref('')
+let updateTimer = null
+let updateRequest = null
+let updateInFlight = false
+const UPDATE_INTERVAL_MS = 15 * 60 * 1000
+
 const signature = computed(() => localCrashSignature(result.value))
 const currentOccurrences = computed(() => signatureOccurrences(historyEntries.value, signature.value))
 const stageInfo = computed(() => identifyBootStage(result.value, context.value))
@@ -106,9 +117,60 @@ onMounted(() => {
   window.addEventListener('offline', updateConnectivity)
   window.addEventListener('beforeinstallprompt', offerInstall)
   window.addEventListener('appinstalled', markInstalled)
+  // The first check also runs on iOS standalone PWAs, which can otherwise
+  // continue showing an old offline UI long after Release has been deployed.
+  void checkWebsiteUpdate()
+  window.addEventListener('focus', onReturnToWebsite)
+  window.addEventListener('online', onReturnToWebsite)
+  document.addEventListener('visibilitychange', onReturnToWebsite)
+  updateTimer = window.setInterval(() => {
+    if (document.visibilityState === 'visible') void checkWebsiteUpdate()
+  }, UPDATE_INTERVAL_MS)
 })
 
 function updateConnectivity() { isOnline.value = navigator.onLine }
+function onReturnToWebsite() {
+  if (document.visibilityState === 'visible' && navigator.onLine) void checkWebsiteUpdate()
+}
+
+async function checkWebsiteUpdate() {
+  if (!navigator.onLine || updateInFlight || updatingWebsite.value) return
+  const controller = new AbortController()
+  updateRequest = controller
+  updateInFlight = true
+  try {
+    const published = await fetchPublishedBuild(fetch, import.meta.env.BASE_URL, { signal: controller.signal })
+    if (published && isNewBuild(websiteBuild, published) && published.buildId !== updateDismissed.value) {
+      availableUpdate.value = published
+    } else if (published && !isNewBuild(websiteBuild, published)) {
+      availableUpdate.value = null
+    }
+  } catch {
+    // Offline, blocked or temporarily unavailable: keep diagnostics working.
+  } finally {
+    if (updateRequest === controller) updateRequest = null
+    updateInFlight = false
+  }
+}
+
+function dismissWebsiteUpdate() {
+  updateDismissed.value = availableUpdate.value?.buildId || ''
+  availableUpdate.value = null
+}
+
+async function updateWebsiteNow() {
+  if (!availableUpdate.value || updatingWebsite.value) return
+  // Don't discard a newly scanned crash or unsent issue draft without consent.
+  if ((result.value || input.value.trim()) && !window.confirm('Updating reloads the website. Please save any unsent crash report or issue draft first. Reload now?')) return
+  updatingWebsite.value = true
+  try {
+    await applyWebsiteUpdate({ navigatorObject: navigator, locationObject: window.location, buildId: availableUpdate.value.buildId })
+  } catch {
+    updatingWebsite.value = false
+    error.value = 'The update could not be opened. Check your connection and try again.'
+  }
+}
+
 function offerInstall(event) { event.preventDefault(); deferredInstall.value = event }
 function markInstalled() { deferredInstall.value = null; isStandalone.value = true }
 async function installApp() {
@@ -382,6 +444,11 @@ onBeforeUnmount(() => {
   window.removeEventListener('offline', updateConnectivity)
   window.removeEventListener('beforeinstallprompt', offerInstall)
   window.removeEventListener('appinstalled', markInstalled)
+  window.removeEventListener('focus', onReturnToWebsite)
+  window.removeEventListener('online', onReturnToWebsite)
+  document.removeEventListener('visibilitychange', onReturnToWebsite)
+  if (updateTimer !== null) clearInterval(updateTimer)
+  updateRequest?.abort()
 })
 
 async function useImage(file) {
@@ -464,6 +531,17 @@ function exportPrivate() {
 
 <template>
   <div class="site">
+    <aside v-if="availableUpdate" class="website-update" role="dialog" aria-labelledby="website-update-title" aria-describedby="website-update-description" aria-live="polite">
+      <span class="website-update-icon" aria-hidden="true">↻</span>
+      <div class="website-update-content">
+        <h2 id="website-update-title">An update is available</h2>
+        <p id="website-update-description">A newer version of Australis Diagnostics is ready{{ availableUpdate.version !== websiteVersion ? ` (v${availableUpdate.version})` : '' }}. Reload to get the latest fixes and features.</p>
+        <div class="website-update-actions">
+          <button type="button" class="button button-primary" :disabled="updatingWebsite" @click="updateWebsiteNow">{{ updatingWebsite ? 'Updating…' : 'Update now' }}</button>
+          <button type="button" class="button button-secondary" :disabled="updatingWebsite" @click="dismissWebsiteUpdate">Later</button>
+        </div>
+      </div>
+    </aside>
     <header class="site-header container">
       <a class="identity" href="#top" aria-label="Australis diagnostics home" @click="reset">
         <span class="identity-symbol" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M18 2 34 18 18 34 2 18 18 2Z" stroke="currentColor" stroke-width="2.2"/><path d="M18 10 26 18 18 26 10 18l8-8Z" fill="currentColor"/></svg></span>
@@ -774,6 +852,6 @@ function exportPrivate() {
       </section>
     </main>
 
-    <footer class="site-footer container"><span>© Australis OS · Crash diagnostics</span><span>Decoded locally · GitHub lookup is optional</span><a href="https://github.com/Aurora-softwares/Australis-OS/issues" target="_blank" rel="noopener noreferrer">Support & issues ↗</a></footer>
+    <footer class="site-footer container"><span>© Australis OS · Crash diagnostics</span><span>Website v{{ websiteVersion }} · Decoded locally · GitHub lookup is optional</span><a href="https://github.com/Aurora-softwares/Australis-OS/issues" target="_blank" rel="noopener noreferrer">Support & issues ↗</a></footer>
   </div>
 </template>
