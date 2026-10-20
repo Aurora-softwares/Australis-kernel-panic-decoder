@@ -1,151 +1,84 @@
-# Australis Panic Decoder
+# Australis Crash Diagnostics
 
-**Version 1.1:** Added expanded plain-English explanations and suggested next debugging evidence for genuine kernel failures, including the supplied x86-64 #UD crash at `RIP=0xE135AF3`. Nine automated parser tests now cover the known serial panic formats.
-
-A mobile-friendly, entirely client-side **Vue 3 + Vite** web app for decoding **Australis OS** kernel panic QR codes and serial panic reports into understandable explanations. Deployable to **GitHub Pages** without a server or API key.
+A small, mobile-friendly Vue 3 application for **public** Australis OS kernel panic diagnosis. It reads a panic QR code or text locally, provides a safe plain-English explanation, and can optionally check public [Australis OS GitHub issues](https://github.com/Aurora-softwares/Australis-OS/issues) for potentially related reports.
 
 ## Features
 
-- Scan QR codes with a front/rear camera (`getUserMedia`, permission requested only on tap).
-- Decode QR screenshots/images via drag-and-drop or local file picker (`jsQR`).
-- Paste a native Australis panic report, compact AUP1 QR payload or JSON object.
-- Explain x86-64 exception vectors, including #PF (vector 14), #GP (vector 13), #UD (vector 6) and #DF (vector 8).
-- Decode page fault error-code bits and fault address `CR2`.
-- Show a meaningful account of what happened, possible failure mechanisms, and **the missing evidence required to identify the culprit**. The decoder distinguishes kernel-level invalid opcodes from memory faults rather than simply displaying their vector name.
-- Flag malformed register names in pasted dumps (such as `R6`, which is not an x86-64 register) without assuming what the intended register was.
-- See registers, the original raw report, copy a diagnosis, or export a `.txt` file.
-- Private: no analytics, accounts, telemetry, uploads, remote API calls, or server-side processing.
-- Offline-capable after visiting once and caching the app. The layout still works with local system fonts when offline.
+- **Three simple inputs:** scan live QR through the camera, upload a screenshot, or paste panic text. A sample report and sample QR are included.
+- **Public-friendly results:** no compiler implementation details, internal paths, instruction addresses, or raw register dumps on the main screen. Raw diagnostics are only available behind the **Technical details (optional)** disclosure, locally in the browser.
+- **System light/dark mode:** default **Auto** follows the operating system; visitors can choose Light or Dark. Only the appearance preference is saved locally.
+- **GitHub issue lookup (explicit opt-in):** tap **Check existing issues** to query GitHub's public API using **only the error category**, e.g. `invalid opcode`. The raw QR, RIP, registers, kernel messages, timestamps, build and any personal details are **not sent** to GitHub.
+- **Related ≠ identical:** search results are labelled *potentially related*. If the query returns nothing, the UI clearly says a match was not found, rather than asserting that the bug is new.
+- **Safe issue draft:** if visitors choose to open a report, the GitHub **Create an issue** link pre-fills a descriptive error name, numeric exception vector (when present), and prompts for reproduction steps. It **never** embeds raw diagnostic values, addresses, log contents or personal data. An OS version is **not required**.
+- Runs as a static site; no account, database, private GitHub token, AI service, or server required.
 
-## Start locally
+### Privacy considerations
 
-Node.js 20.19+ or 22.12+ recommended.
+QR decoding and diagnosis happen entirely in the browser. GitHub search is only performed after an explicit click. That search sends the error classification plus standard requests to `api.github.com`; GitHub receives typical connection metadata such as IP address when visited. Creating an issue opens GitHub and requires its usual account/sign-in steps. Users can always skip GitHub and still receive a local explanation. The web app has no telemetry. **Do not add tokens, secret environment values, private file contents or an internal symbol map to a public GitHub Pages repository**: static web assets are publicly readable.
 
-```bash
+## How visitors use it
+
+1. Look for the diagnostic QR on the Australis crash screen.
+2. Open the website on a phone, choose **Camera**, tap **Start scanning**, then point at the QR code. Alternatively **Upload image** or **Paste text**.
+3. Read what happened and what to do next. If the crash was unexpected, tap **Check existing issues**.
+4. Review any related reports. If needed, choose **Create an issue**, describe what you were doing, and review the draft before publishing it.
+
+Camera use requires HTTPS or localhost and camera permission. GitHub Pages serves HTTPS. The scanner accepts native Australis console panic text, JSON payloads, and the compact `AUP1` diagnostic format; no OS version is required.
+
+## Local development
+
+Requires Node.js 20.19+ or Node.js 22.12+.
+
+```sh
 npm install
 npm run dev
 ```
 
-Visit <http://localhost:5173>. Click **Try a sample kernel panic** to test the parser without a QR code. You can also open `public/sample-panic-qr.png` on a second screen to test the camera, or upload it directly to test image decoding.
+Open `http://localhost:5173/`.
 
-```bash
-npm test
-npm run build
+```sh
+npm test       # diagnostic, privacy, issue-link, and search tests
+npm run build  # production Vue bundle
 npm run preview
 ```
 
-`npm test` runs Node's built-in test runner, with no test runner package required.
+## GitHub Pages
 
-## GitHub Pages deployment (recommended)
+1. Create a public GitHub repository, e.g. `Australis-Panic-Decoder`.
+2. Upload the contents of this folder to the repository root and push to `main`.
+3. Open **Settings → Pages → Build and deployment**, and select **GitHub Actions**.
+4. The supplied workflow tests, builds, and deploys the app. The resulting URL will be similar to `https://aurora-softwares.github.io/Australis-Panic-Decoder/`.
 
-1. Create a GitHub repository, for example **`Australis-Panic-Decoder`**.
-2. Put **the contents of this project folder** at the repository root.
-3. Push them to `main`. For a new local directory after creating the empty GitHub repository:
+The workflow automatically sets Vite's base path for repository Pages hosting. The GitHub issue destination is currently configured to **`Aurora-softwares/Australis-OS`**, in `src/lib/issues.js`. Change that single constant if you later move public issues to another repository.
 
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial Australis Panic Decoder"
-   git branch -M main
-   git remote add origin https://github.com/<OWNER>/<REPO>.git
-   git push -u origin main
-   ```
-4. Under **Settings → Pages → Build and deployment → Source**, select **GitHub Actions**.
-5. Open **Actions** and run **Deploy GitHub Pages** if it does not run automatically.
-6. The published address will normally be `https://<YOUR-USERNAME>.github.io/Australis-Panic-Decoder/` (or the GitHub organisation's domain, if hosted there).
+For Cloudflare Pages, choose the Vite preset, build command `npm run build`, output `dist`, and use the default `/` base path.
 
-The workflow detects the repository name and sets Vite's `base` option automatically. For a special repository named `<owner>.github.io`, it sets `/` rather than `/repo/`.
+## Supported panic formats (maintainer notes — not shown to visitors)
 
-To build manually for a project page:
-
-```bash
-GITHUB_PAGES_BASE=/Australis-Panic-Decoder/ npm run build
-```
-
-For **Cloudflare Pages**: connect the repository, choose Vite, build command `npm run build`, output directory `dist`, and no `GITHUB_PAGES_BASE` variable (or set it to `/`).
-
-### HTTPS and camera permissions
-
-Browsers allow camera access on secure HTTPS pages or `localhost`. GitHub Pages uses HTTPS. The user must still grant camera access. If a camera fails, uploading a photo or pasting text works without camera permissions. To scan a QR code displayed by a different device, point the scanning device's camera at the panic screen.
-
-## What actually works with Australis today?
-
-The `Development` branch of `Aurora-softwares/Australis-OS` has a `tests/kernel/panic_boot_smoke.py` that verifies serial and framebuffer panic reports. It checks the exact banner **`*** AUSTRALIS KERNEL PANIC ***`** and fields named `VECTOR`, `ERROR`, `RIP`, `RFLAGS`, `RSP` and CPU registers. The existing kernel contract documents `CR2` for page faults.
-
-For example:
+Australis currently produces a native console report such as:
 
 ```text
 *** AUSTRALIS KERNEL PANIC ***
-Fatal CPU exception; interrupts are disabled.
-VECTOR  =0x000000000000000E
+VECTOR  =0x0000000000000006
 ERROR   =0x0000000000000000
-RIP     =0x00000000001041F2
-RSP     =0x00000000003FEEB0
-CR2     =0x0000000000000000
-RAX     =0x0000000000000000
-System halted. Power cycle or reset to continue.
+RIP     =0x0000000000012345
+RSP     =0x0000000000023456
 ```
 
-**Important:** The repo evidence confirms the native panic **text**, but does **not** confirm that the kernel currently displays QR codes. That is a separate kernel feature to add. This web app is ready for a QR carrying the compact payload described below, or the plain text above if it fits in the QR. Never add QR generation that depends on heap allocations or normal userland services to the fatal exception path.
-
-## Proposed QR payload contract: `AUP1`
-
-The **suggested** format for future kernel QR rendering is a short UTF-8 string:
+Recommended short QR payload:
 
 ```text
-AUP1;v=14;e=0x0;ip=0x1041F2;sp=0x3FEEB0;a=0x0
+AUP1;v=6;e=0x0;ip=0x12345;sp=0x23456
 ```
 
-- Prefix: `AUP1` (Australis Panic payload, version 1).
-- `v`: CPU exception vector (decimal, e.g. `14`).
-- `e`: CPU error code (hex or decimal).
-- `ip`: RIP — faulting instruction pointer (hex preferred).
-- `sp`: RSP — stack pointer (hex preferred).
-- `a`: CR2 — faulting address for **page faults only**.
-- Optional `m`: short message (percent-encode `;`, `|`, `%` and other non-alphanumeric characters).
-- Optional `pid`, `process`, `build`, `version`, `time`, and named registers such as `rax` and `r15`.
+The **AUP1 prefix is a format version**, not an Australis OS release version. Fields `v` (CPU vector), `e` (error code), `ip` (RIP), `sp` (RSP), and optional `a` (CR2, useful for vector 14) are supported. All OS build/version fields are optional. Keep QR generation allocation-free and preserve the serial text fallback on panic.
 
-Use `;` between key-value pairs, and `=` between keys and values. Keep numeric addresses as unsigned hexadecimal strings. Do not use `a` to imply a faulting address for #GP: CR2 is not a #GP cause indicator. For panic reporting, prefer essential fields (`v`, `e`, `ip`, `sp`, and for #PF `a`) to keep the QR small, readable and robust.
+The parser provides exception-type diagnosis, not provable source-level causation. A matching exception category on GitHub is **not proof** two crashes share a root cause. Accurate symbol matching requires an exact binary/build identifier, which is intentionally not needed or publicly exposed by this app.
 
-This versioning is a **proposal for kernel integration**, not a claim that the kernel already emits `AUP1`. The parser also accepts native plain text and JSON:
+## Offline use and verification
 
-```json
-{
-  "schema": "AUP1",
-  "vector": 14,
-  "error": "0x2",
-  "registers": { "rip": "0x1041F2", "rsp": "0x3FEEB0", "cr2": "0x0" },
-  "message": "page access denied"
-}
-```
-
-### Suggested kernel integration approach
-
-1. Preserve the existing allocation-free serial/framebuffer panic path first.
-2. Capture the fixed-size CPU frame and build a bounded ASCII `AUP1` string using static storage; no heap allocations, VFS access, locks, or interrupts.
-3. Render a QR code into the **already mapped** GOP framebuffer with a QR encoder usable without dynamic allocation. Avoid allocating from the kernel heap in a panic path. Ensure pixels/modules are at least ~4–6 screen pixels wide and show a white quiet zone of 4 modules.
-4. Keep the plain text report and COM1 output readable if QR generation fails. A QR code is an optional recovery aid, not a substitute for the serial log.
-5. Add QEMU screenshot tests that decode the rendered QR and compare the payload against the retained saved exception frame.
-
-An accurate **source-line diagnosis** requires matching RIP to the correct kernel binary and symbols/map file. For example, for exception vector 6 the decoder explains why the system halted, distinguishes #UD from #PF, treats CR2 as unrelated, and gives a GDB instruction-byte inspection command for the saved RIP. The current decoder offers architectural interpretation; it does not pretend to symbolicate addresses. A later upgrade could accept a local symbol map and match it to `build` (without any server).
-
-### Security & privacy
-
-Everything runs in the browser. QR codes are treated as **data only**; the app does not follow URLs contained in QR codes. Raw payload text is rendered through Vue's escaped bindings, not injected as HTML. Files are decoded in-memory and not uploaded. No payloads are stored in localStorage; the service worker caches the app's same-origin assets, not submissions. The optional downloadable text report is saved only to your device.
-
-### Limitations
-
-- The root cause of a kernel panic cannot be proven from a vector alone. The app identifies the CPU exception and suggests where to look.
-- Camera support varies by device/browser; use upload or paste as fallback.
-- Very dense QR codes may be difficult for cameras to scan. Prefer AUP1 over a full register dump.
-- The app needs an internet connection to fetch its code on the first visit. Service-worker asset caching makes later visits usable offline after the required files have been cached.
-- This initial source package has automated parser tests. Test camera behaviour, browser building, and GitHub Pages deployment in the target environment.
-
-## Source references
-
-- [Australis OS Development panic smoke test](https://github.com/Aurora-softwares/Australis-OS/blob/Development/tests/kernel/panic_boot_smoke.py)
-- [Australis kernel reliability contract](https://github.com/Aurora-softwares/Australis-OS/blob/Development/docs/kernel-reliability.md)
+After a successful first load, the existing service worker caches the static app assets to allow local decoding without connectivity. Checking GitHub issues necessarily needs the internet; if offline or API-limited, users can still read the local diagnosis and follow the direct GitHub link later. Browser camera behavior and production bundling need validation in a browser/Node environment with dependencies installed.
 
 ## Licence
 
-MIT (see `LICENSE`).
+MIT, see `LICENSE`.

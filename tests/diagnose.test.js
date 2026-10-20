@@ -58,29 +58,29 @@ test('input size and empty values are guarded', () => {
 })
 
 
-test('real-world invalid-opcode crash receives a useful, bounded explanation', () => {
+test('synthetic invalid-opcode panic receives a useful, bounded explanation', () => {
   const payload = `*** AUSTRALIS KERNEL PANIC ***
 Fatal CPU exception; Interupts are disabled.
 VECTOR   = 0x0000000000000006
 ERROR    = 0x0000000000000000
-RIP      = 0x000000000E135AF3
+RIP      = 0x0000000000012345
 CS       = 0x0000000000000008
 RFLAGS   = 0x0000000000010206
-RSP      = 0x0000000001BA38F0
-CR2      = 0x000000000e148000
+RSP      = 0x0000000000023456
+CR2      = 0x0000000000034567
 RAX      = 0x0000000000001000
 R6       = 0x0000000000000000
-R15      = 0x000000000E148000
+R15      = 0x0000000000034567
 System halted. Power cycle or reset to continue.`
   const result = diagnosePanic(payload)
   assert.equal(result.valid, true)
   assert.equal(result.vector, 6)
   assert.equal(result.title, 'Invalid opcode')
   assert.match(result.summary, /Australis OS encountered invalid machine-code instruction bytes/)
-  assert.match(result.summary, /0x000000000E135AF3/)
+  assert.match(result.summary, /0x0000000000012345/)
   assert.match(result.summary, /kernel code/)
-  assert.match(result.nextEvidence, /x\/16xb 0x000000000E135AF3/)
-  assert.match(result.nextEvidence, /x\/8i 0x000000000E135AF3/)
+  assert.match(result.nextEvidence, /x\/16xb 0x0000000000012345/)
+  assert.match(result.nextEvidence, /x\/8i 0x0000000000012345/)
   assert.match(result.findings.map(v => v.value).join(' '), /R6, which is not an x86-64 register/)
   assert.match(result.findings.map(v => v.value).join(' '), /CR2 is only meaningful for page faults/)
   assert.ok(result.possibleCauses.length >= 3)

@@ -1,11 +1,9 @@
 {
-  "name": "Australis Panic Decoder",
-  "short_name": "Panic Decoder",
-  "description": "Private, offline-capable Australis OS kernel panic QR code decoder",
-  "start_url": "./",
-  "scope": "./",
+  "name": "Australis Crash Diagnostics",
+  "short_name": "Australis Diagnostics",
+  "start_url": ".",
   "display": "standalone",
-  "background_color": "#0b1019",
-  "theme_color": "#0b1019",
-  "icons": [{"src":"favicon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]
+  "background_color": "#0e141c",
+  "theme_color": "#171f2a",
+  "icons": [{ "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
 }

@@ -1,69 +1,62 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { diagnosePanic, SAMPLE_PANIC } from './lib/diagnose.js'
+import { publicDiagnosis } from './lib/public-diagnosis.js'
+import { issueSearchPage, newIssueUrl, searchPublicIssues } from './lib/issues.js'
 import { scanImage, scanVideoFrame } from './lib/qr.js'
 
 const mode = ref('camera')
+const theme = ref('auto')
 const input = ref('')
 const result = ref(null)
 const error = ref('')
-const notice = ref('')
 const fileName = ref('')
 const busy = ref(false)
 const cameraActive = ref(false)
 const cameraBusy = ref(false)
 const video = ref(null)
-const reportPanel = ref(null)
 const filePicker = ref(null)
-const visibleDetails = ref(false)
-const copied = ref('')
+const reportPanel = ref(null)
+const copied = ref(false)
+const issueStatus = ref('idle')
+const issueError = ref('')
+const relatedIssues = ref([])
+const plain = computed(() => result.value ? publicDiagnosis(result.value) : null)
+const newIssue = computed(() => newIssueUrl(result.value))
+const searchPage = computed(() => issueSearchPage(result.value))
 const sampleQrUrl = `${import.meta.env.BASE_URL}sample-panic-qr.png`
-const compactExample = 'AUP1;v=14;e=0x0;ip=0x1041F2;sp=0x3FEEB0;a=0x0'
-const registerNames = ['RIP', 'RSP', 'CR2', 'RFLAGS', 'CS', 'SS', 'RAX', 'RBX', 'RCX', 'RDX', 'RSI', 'RDI', 'RBP', 'R8', 'R9', 'R10', 'R11', 'R12', 'R13', 'R14', 'R15']
-const registers = computed(() => result.value ? registerNames.filter((name) => result.value.fields[name]).map((name) => ({ name, value: result.value.fields[name] })) : [])
+
 let stream = null
 let frameId = null
 let frameAt = 0
 let frameCanvas = null
 let scanComplete = false
+let lookupAbort = null
+let lookupNumber = 0
 let copyTimer = null
 
-function clearMessages() { error.value = ''; notice.value = '' }
-
-function explain(text, origin = 'Pasted report') {
-  clearMessages()
+onMounted(() => {
   try {
-    input.value = text
-    result.value = diagnosePanic(text)
-    notice.value = `Decoded from ${origin.toLowerCase()}`
-    visibleDetails.value = false
-    stopCamera()
-    if (window.matchMedia('(max-width: 990px)').matches) {
-      void nextTick(() => reportPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
-    }
-  } catch (cause) {
-    error.value = cause?.message || 'Could not decode the panic report.'
-  }
+    const saved = localStorage.getItem('australis-theme')
+    if (['auto', 'light', 'dark'].includes(saved)) theme.value = saved
+  } catch { /* Preference storage is optional. */ }
+  document.documentElement.dataset.theme = theme.value
+})
+
+function chooseTheme(value) {
+  if (!['auto', 'light', 'dark'].includes(value)) return
+  theme.value = value
+  document.documentElement.dataset.theme = value
+  try { localStorage.setItem('australis-theme', value) } catch { /* Optional. */ }
 }
 
-function loadSample() {
-  mode.value = 'paste'
-  explain(SAMPLE_PANIC, 'sample kernel panic')
-}
-
-function reset() {
-  stopCamera()
-  input.value = ''
-  result.value = null
-  fileName.value = ''
-  visibleDetails.value = false
-  clearMessages()
-}
-
-function setMode(value) {
-  if (mode.value === value) return
-  mode.value = value
-  clearMessages()
+function resetIssueLookup() {
+  lookupNumber++
+  lookupAbort?.abort()
+  lookupAbort = null
+  issueStatus.value = 'idle'
+  relatedIssues.value = []
+  issueError.value = ''
 }
 
 function stopCamera() {
@@ -78,19 +71,60 @@ function stopCamera() {
   if (video.value) video.value.srcObject = null
 }
 
+function explain(text) {
+  error.value = ''
+  resetIssueLookup()
+  try {
+    result.value = diagnosePanic(text)
+    input.value = text
+    stopCamera()
+    if (window.matchMedia('(max-width: 800px)').matches) {
+      void nextTick(() => reportPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+    }
+  } catch (cause) {
+    result.value = null
+    error.value = cause?.message || 'This report could not be read.'
+  }
+}
+
+function goToPaste() {
+  setMode('paste')
+  void nextTick(() => document.getElementById('scan-heading')?.scrollIntoView({ behavior: 'smooth' }))
+}
+
+function trySample() {
+  mode.value = 'paste'
+  explain(SAMPLE_PANIC)
+}
+
+function reset() {
+  stopCamera()
+  resetIssueLookup()
+  input.value = ''
+  result.value = null
+  fileName.value = ''
+  error.value = ''
+}
+
+function setMode(value) {
+  if (!['camera', 'upload', 'paste'].includes(value)) return
+  mode.value = value
+  error.value = ''
+}
+
 function scanFrame(time) {
   if (!stream || !cameraActive.value || scanComplete) return
   if (time - frameAt > 150 && video.value?.readyState >= 2) {
     frameAt = time
     try {
-      const data = scanVideoFrame(video.value, frameCanvas)
-      if (data) {
+      const payload = scanVideoFrame(video.value, frameCanvas)
+      if (payload) {
         scanComplete = true
-        explain(data, 'camera QR code')
+        explain(payload)
         return
       }
-    } catch (cause) {
-      error.value = `Camera frame error: ${cause.message}`
+    } catch {
+      error.value = 'We could not scan the camera image. Try uploading a photo instead.'
       stopCamera()
       return
     }
@@ -99,20 +133,19 @@ function scanFrame(time) {
 }
 
 async function startCamera() {
-  clearMessages()
+  error.value = ''
   stopCamera()
   cameraBusy.value = true
   try {
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Camera scanning requires HTTPS or localhost and a browser with camera access. Use image upload instead.')
+      throw new Error('Camera access needs HTTPS or localhost. You can upload a picture instead.')
     }
     await nextTick()
     const live = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
     })
-    // Camera could have been closed or the user could have changed tabs while permission was pending.
-    if (mode.value !== 'camera') {
+    if (mode.value !== 'camera' || !video.value) {
       live.getTracks().forEach((track) => track.stop())
       return
     }
@@ -126,31 +159,30 @@ async function startCamera() {
     frameId = requestAnimationFrame(scanFrame)
   } catch (cause) {
     stopCamera()
-    if (cause?.name === 'NotAllowedError') {
-      error.value = 'Camera access was denied. Allow camera permission for this site, or upload a QR image.'
-    } else if (cause?.name === 'NotFoundError') {
-      error.value = 'No camera was found. Use image upload or paste the report.'
-    } else {
-      error.value = cause?.message || 'The camera could not be started.'
-    }
+    if (cause?.name === 'NotAllowedError') error.value = 'Camera permission was denied. Allow camera access or use an image instead.'
+    else if (cause?.name === 'NotFoundError') error.value = 'No camera was found. Upload a picture or paste the report instead.'
+    else error.value = cause?.message || 'The camera could not be opened.'
   } finally { cameraBusy.value = false }
 }
 
 watch(mode, (next) => { if (next !== 'camera') stopCamera() })
-onBeforeUnmount(() => { stopCamera(); if (copyTimer) clearTimeout(copyTimer) })
+onBeforeUnmount(() => {
+  stopCamera()
+  resetIssueLookup()
+  if (copyTimer) clearTimeout(copyTimer)
+})
 
 async function useImage(file) {
   if (!file) return
-  clearMessages()
-  busy.value = true
+  error.value = ''
   fileName.value = file.name
+  busy.value = true
   try {
     const payload = await scanImage(file)
-    if (!payload) throw new Error('No QR code was detected. Try a sharper screenshot with the whole QR code visible and a clear border.')
-    explain(payload, `image ${file.name}`)
-  } catch (cause) {
-    error.value = cause?.message || 'The image could not be scanned.'
-  } finally {
+    if (!payload) throw new Error('No QR code found. Try a clearer image showing all four corners of the code.')
+    explain(payload)
+  } catch (cause) { error.value = cause?.message || 'Could not read this image.' }
+  finally {
     busy.value = false
     if (filePicker.value) filePicker.value.value = ''
   }
@@ -159,158 +191,190 @@ async function useImage(file) {
 function onChoose(event) { void useImage(event.target.files?.[0]) }
 function onDrop(event) { void useImage(event.dataTransfer?.files?.[0]) }
 
-async function copyText(text, type) {
+async function checkIssues() {
+  if (!result.value?.valid || issueStatus.value === 'loading') return
+  resetIssueLookup()
+  issueStatus.value = 'loading'
+  const myLookup = ++lookupNumber
+  const controller = new AbortController()
+  lookupAbort = controller
+  const timeout = setTimeout(() => controller.abort(), 10000)
   try {
-    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable in this browser.')
-    await navigator.clipboard.writeText(text)
-    copied.value = type
-    if (copyTimer) clearTimeout(copyTimer)
-    copyTimer = setTimeout(() => { copied.value = '' }, 1800)
-  } catch (cause) { error.value = `Could not copy: ${cause.message}` }
+    const items = await searchPublicIssues(result.value, fetch, controller.signal)
+    if (myLookup !== lookupNumber) return
+    relatedIssues.value = items
+    issueStatus.value = items.length ? 'found' : 'none'
+  } catch (cause) {
+    if (myLookup !== lookupNumber) return
+    issueStatus.value = 'error'
+    issueError.value = controller.signal.aborted
+      ? 'The request timed out. You can search GitHub directly.'
+      : (cause?.message || 'GitHub search is unavailable right now.')
+  } finally {
+    clearTimeout(timeout)
+    if (myLookup === lookupNumber) lookupAbort = null
+  }
 }
 
-function downloadReport() {
-  if (!result.value) return
-  const blob = new Blob([result.value.report], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = 'australis-panic-report.txt'
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+async function copySummary() {
+  if (!result.value?.valid) return
+  const report = `${plain.value.title}\n${plain.value.description}\n${plain.value.guidance}\n\nException vector: ${Number.isInteger(result.value.vector) ? result.value.vector : 'not supplied'}\n\nNo raw crash data included.`
+  try {
+    await navigator.clipboard.writeText(report)
+    copied.value = true
+    if (copyTimer) clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => { copied.value = false }, 1800)
+  } catch { error.value = 'Copying is unavailable. Try using your browser’s copy option.' }
 }
 </script>
 
 <template>
-  <div class="site-shell">
-    <div class="ambient ambient-a" aria-hidden="true"></div>
-    <div class="ambient ambient-b" aria-hidden="true"></div>
-
-    <header class="site-header wrap">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 42 42" fill="none"><path d="m21 2 6.2 12.8L40 21l-12.8 6.2L21 40l-6.2-12.8L2 21l12.8-6.2L21 2Z" fill="currentColor"/><circle cx="21" cy="21" r="4.5" fill="#0b1019"/></svg>
+  <div class="site">
+    <header class="site-header container">
+      <a class="identity" href="#top" aria-label="Australis diagnostics home" @click="reset">
+        <span class="identity-symbol" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M18 2 34 18 18 34 2 18 18 2Z" stroke="currentColor" stroke-width="2.2"/><path d="M18 10 26 18 18 26 10 18l8-8Z" fill="currentColor"/></svg></span>
+        <span><strong>Australis</strong><small>Crash diagnostics</small></span>
+      </a>
+      <div class="top-controls">
+        <a class="help-nav" href="#how-to">How to use</a>
+        <div class="theme-control" role="group" aria-label="Appearance">
+          <button type="button" :aria-pressed="theme === 'auto'" :class="{ selected: theme === 'auto' }" @click="chooseTheme('auto')">Auto</button>
+          <button type="button" :aria-pressed="theme === 'light'" :class="{ selected: theme === 'light' }" @click="chooseTheme('light')">Light</button>
+          <button type="button" :aria-pressed="theme === 'dark'" :class="{ selected: theme === 'dark' }" @click="chooseTheme('dark')">Dark</button>
         </div>
-        <div><span class="brand-name">AUSTRALIS<span class="brand-dot">.</span></span><span class="brand-sub">SYSTEM DIAGNOSTICS</span></div>
       </div>
-      <div class="header-right"><span class="pulse-dot"></span><span>100% on-device</span><span class="header-version">V1.1</span></div>
     </header>
 
-    <main class="wrap">
-      <section class="hero">
-        <div class="eyebrow"><span class="eyebrow-line"></span> CRASH RECOVERY TOOLKIT <span class="eyebrow-number">/ 001</span></div>
-        <h1>Decode the crash.<br /><span>Understand the cause.</span></h1>
-        <p>Turn cryptic Australis OS kernel panics into clear, actionable explanations. Scan a QR code, upload a screenshot, or paste your crash report.</p>
-        <div class="hero-tags"><span><span class="small-check">✓</span> No accounts</span><span><span class="small-check">✓</span> No uploads</span><span><span class="small-check">✓</span> Works offline after first visit</span></div>
+    <main id="top" class="container">
+      <section class="intro" aria-labelledby="page-title">
+        <span class="eyebrow"><span class="brand-dot"></span> FREE, PRIVATE DIAGNOSTICS</span>
+        <h1 id="page-title">Understand what went wrong.</h1>
+        <p>Australis OS has stopped unexpectedly? Scan the QR code on your screen to find out what happened and what to do next.</p>
       </section>
 
-      <section class="workspace" aria-label="Panic decoder">
-        <div class="panel input-panel">
-          <div class="panel-heading"><div><div class="section-label">01 / INPUT</div><h2>Capture a panic</h2><p>Choose how you'd like to provide the diagnostic data.</p></div><div class="corner-glyph">⌜</div></div>
-          <div class="mode-switch" role="tablist" aria-label="Input method">
-            <button type="button" role="tab" :aria-selected="mode === 'camera'" :class="{ active: mode === 'camera' }" @click="setMode('camera')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="m8 6 1.5-3h5L16 6"/><circle cx="12" cy="13" r="3.5"/></svg>Camera
-            </button>
-            <button type="button" role="tab" :aria-selected="mode === 'upload'" :class="{ active: mode === 'upload' }" @click="setMode('upload')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V3m-5 5 5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>Upload
-            </button>
-            <button type="button" role="tab" :aria-selected="mode === 'paste'" :class="{ active: mode === 'paste' }" @click="setMode('paste')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="16" rx="2"/><path d="M9 5.5V3h6v2.5M9 12h6m-6 4h6"/></svg>Paste text
-            </button>
+      <div class="main-grid">
+        <section class="card input-card" aria-labelledby="scan-heading">
+          <div class="card-header">
+            <span class="step-number">01</span>
+            <div><h2 id="scan-heading">Scan your error</h2><p>Choose the easiest way to provide the crash details.</p></div>
           </div>
 
-          <div class="input-body">
-            <div v-show="mode === 'camera'" class="camera-content" role="tabpanel">
-              <div class="scanner-surface" :class="{ live: cameraActive }">
-                <video ref="video" autoplay playsinline muted :class="{ visible: cameraActive }"></video>
-                <div v-if="!cameraActive" class="scanner-empty">
-                  <div class="scan-icon"><svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="4"><path d="M8 32V15a7 7 0 0 1 7-7h17M68 8h17a7 7 0 0 1 7 7v17M92 68v17a7 7 0 0 1-7 7H68M32 92H15a7 7 0 0 1-7-7V68"/><rect x="27" y="27" width="15" height="15"/><path d="M58 27h15v15H58zM27 58h15v15H27zM58 58h8m-8 8v7m8-7h7v7"/></svg></div>
-                  <span>READY TO SCAN</span><small>Position a panic QR code within the frame</small>
-                </div>
-                <div class="scanner-reticle" v-show="cameraActive" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
-                <div class="scanner-live" v-if="cameraActive"><span class="live-dot"></span> LIVE CAMERA</div>
+          <div class="tabs" role="tablist" aria-label="Choose input method">
+            <button id="tab-camera" role="tab" type="button" :aria-selected="mode === 'camera'" aria-controls="panel-camera" :class="{ active: mode === 'camera' }" @click="setMode('camera')">Camera</button>
+            <button id="tab-upload" role="tab" type="button" :aria-selected="mode === 'upload'" aria-controls="panel-upload" :class="{ active: mode === 'upload' }" @click="setMode('upload')">Upload image</button>
+            <button id="tab-paste" role="tab" type="button" :aria-selected="mode === 'paste'" aria-controls="panel-paste" :class="{ active: mode === 'paste' }" @click="setMode('paste')">Paste text</button>
+          </div>
+
+          <div v-show="mode === 'camera'" id="panel-camera" role="tabpanel" aria-labelledby="tab-camera" class="input-area">
+            <div class="scan-preview" :class="{ 'is-live': cameraActive }">
+              <video ref="video" :class="{ visible: cameraActive }" autoplay playsinline muted aria-label="Live QR code scanner"></video>
+              <div v-if="!cameraActive" class="scan-placeholder">
+                <svg class="qr-placeholder" viewBox="0 0 64 64" fill="none" aria-hidden="true"><path d="M7 24V7h17M40 7h17v17M57 40v17H40M24 57H7V40" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/><path d="M19 19h11v11H19zM34 19h11v11H34zM19 34h11v11H19zM34 34h5m-5 6h11v5" stroke="currentColor" stroke-width="2.8"/></svg>
+                <strong>Point your camera at the QR code</strong>
+                <span>Keep the entire code inside the frame.</span>
               </div>
-              <button v-if="!cameraActive" class="primary-btn full" type="button" :disabled="cameraBusy" @click="startCamera">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="6" width="18" height="14" rx="2"/><circle cx="12" cy="13" r="3"/></svg>{{ cameraBusy ? 'Requesting camera…' : 'Start camera' }} <span class="button-arrow">↗</span>
+              <span v-else class="camera-live"><span></span> Scanning…</span>
+            </div>
+            <button v-if="!cameraActive" type="button" class="button button-primary full" :disabled="cameraBusy" @click="startCamera">{{ cameraBusy ? 'Opening camera…' : 'Start scanning' }} <span aria-hidden="true">→</span></button>
+            <button v-else type="button" class="button button-subtle full" @click="stopCamera">Stop camera</button>
+            <p class="field-note">Camera permission is only requested when you start scanning.</p>
+          </div>
+
+          <div v-show="mode === 'upload'" id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" class="input-area">
+            <div class="dropzone" role="button" tabindex="0" aria-label="Choose QR code image" @click="filePicker?.click()" @keydown.enter.prevent="filePicker?.click()" @keydown.space.prevent="filePicker?.click()" @dragover.prevent @dragenter.prevent @drop.prevent="onDrop">
+              <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="6" y="6" width="36" height="36" rx="8"/><path d="m13 32 9-10 6 6 5-6 6 10M15 16h.01" stroke-linecap="round"/></svg>
+              <strong>{{ busy ? 'Reading image…' : 'Choose a QR code image' }}</strong>
+              <span>Click to browse, or drag a screenshot here.</span>
+              <span class="file-hint">PNG, JPG or WebP · up to 12 MB</span>
+            </div>
+            <input ref="filePicker" type="file" accept="image/png,image/jpeg,image/webp,image/*" class="visually-hidden" aria-label="Upload QR code screenshot" @change="onChoose" />
+            <p class="field-note">{{ fileName ? `Selected: ${fileName}` : 'Your image is decoded on your device. It is not uploaded.' }}</p>
+          </div>
+
+          <div v-show="mode === 'paste'" id="panel-paste" role="tabpanel" aria-labelledby="tab-paste" class="input-area">
+            <label class="input-label" for="panic-text">Paste the error message or QR code text</label>
+            <textarea id="panic-text" v-model="input" maxlength="65536" spellcheck="false" placeholder="Paste the panic message shown by Australis OS…" @keydown.ctrl.enter="explain(input)" @keydown.meta.enter="explain(input)"></textarea>
+            <button class="button button-primary full" type="button" :disabled="!input.trim()" @click="explain(input)">Explain error <span aria-hidden="true">→</span></button>
+            <p class="field-note">You can also paste the text from the kernel's serial output.</p>
+          </div>
+
+          <div v-if="error" class="notice-error" role="alert">{{ error }}</div>
+          <div class="sample-row">Don't have a QR code yet? <button type="button" class="text-button" @click="trySample">Try an example →</button></div>
+        </section>
+
+        <section ref="reportPanel" class="card diagnosis-card" aria-labelledby="result-heading">
+          <div class="card-header result-header">
+            <span class="step-number">02</span>
+            <div><h2 id="result-heading">Your results</h2><p>A straightforward explanation of the problem.</p></div>
+            <button v-if="result" class="clear-button" type="button" @click="reset">Clear</button>
+          </div>
+
+          <div v-if="!result" class="result-empty">
+            <span class="result-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2"><circle cx="24" cy="24" r="18"/><path d="M24 14v12m0 7v1" stroke-linecap="round"/></svg></span>
+            <h3>Ready when you are</h3>
+            <p>Once you scan or paste an error, we'll explain what it means and help you check for existing reports.</p>
+          </div>
+          <div v-else-if="!result.valid" class="result-content" aria-live="polite">
+            <span class="status status-muted">Could not identify a panic</span>
+            <h3>{{ plain.title }}</h3>
+            <p class="explanation">{{ plain.description }}</p>
+            <p class="guidance">{{ plain.guidance }}</p>
+            <button type="button" class="button button-subtle" @click="reset">Try again</button>
+          </div>
+          <div v-else class="result-content" aria-live="polite">
+            <span class="status status-warning"><span></span> Kernel panic detected</span>
+            <h3>{{ plain.title }}</h3>
+            <p class="explanation">{{ plain.description }}</p>
+            <div class="answer-box"><strong>What should I do?</strong><p>{{ plain.guidance }}</p></div>
+            <p class="accuracy-note">This identifies the type of error, but not necessarily its exact cause.</p>
+
+            <section class="issue-lookup" aria-labelledby="issue-heading">
+              <div class="issue-top"><span class="step-number small">03</span><div><h4 id="issue-heading">Has this been reported?</h4><p>Find potentially related reports on GitHub.</p></div></div>
+              <p class="privacy-inline"><span aria-hidden="true">◈</span> Only the error category is searched. Your QR code, registers and memory addresses stay private.</p>
+              <button class="button button-secondary full" type="button" :disabled="issueStatus === 'loading'" @click="checkIssues">
+                {{ issueStatus === 'loading' ? 'Checking GitHub…' : issueStatus === 'idle' ? 'Check existing issues' : 'Check again' }}
+                <span v-if="issueStatus !== 'loading'" aria-hidden="true">↗</span>
               </button>
-              <button v-else class="outline-btn full" type="button" @click="stopCamera">Stop camera</button>
-              <p class="helper-text">Camera access is only used for scanning. Nothing is recorded or sent anywhere.</p>
-            </div>
 
-            <div v-show="mode === 'upload'" role="tabpanel">
-              <div class="dropzone" role="button" tabindex="0" @click="filePicker?.click()" @keydown.enter.prevent="filePicker?.click()" @keydown.space.prevent="filePicker?.click()" @dragenter.prevent @dragover.prevent @drop.prevent="onDrop">
-                <div class="upload-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 16V3m-5 5 5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></div>
-                <strong>{{ busy ? 'Scanning image…' : 'Drop your QR screenshot here' }}</strong><span>or click to choose a file</span><small>PNG, JPG, WebP · Maximum 12 MB</small>
-                <div class="choose-label">Browse files <span>↗</span></div>
+              <div v-if="issueStatus === 'found'" class="lookup-result" aria-live="polite">
+                <strong>Potentially related reports</strong>
+                <p>These mention the same type of error. They aren't necessarily the same bug.</p>
+                <ul class="issues-list"><li v-for="item in relatedIssues" :key="item.number"><a :href="item.url" target="_blank" rel="noopener noreferrer">#{{ item.number }} · {{ item.title }} <span aria-hidden="true">↗</span></a><span class="issue-state">{{ item.state }}</span></li></ul>
+                <p class="field-note">Check an issue's details before deciding whether to add a comment or report a new problem.</p>
               </div>
-              <input ref="filePicker" type="file" class="visually-hidden" accept="image/*" aria-label="Upload a QR code image" @change="onChoose" />
-              <p class="helper-text">Your image is decoded locally and never leaves this device. {{ fileName ? `Last selected: ${fileName}` : '' }}</p>
-            </div>
+              <div v-else-if="issueStatus === 'none'" class="lookup-result" aria-live="polite"><strong>No matching public issues found</strong><p>That doesn't guarantee the problem has never been reported. You can create a new report below.</p></div>
+              <div v-else-if="issueStatus === 'error'" class="lookup-result" role="status"><strong>Search couldn't be completed</strong><p>{{ issueError }}</p></div>
 
-            <div v-show="mode === 'paste'" class="paste-content" role="tabpanel">
-              <div class="textarea-top"><label for="panic-text">PANIC PAYLOAD</label><span>TEXT / JSON / AUP1</span></div>
-              <textarea id="panic-text" v-model="input" spellcheck="false" placeholder="*** AUSTRALIS KERNEL PANIC ***&#10;VECTOR  =0x000000000000000E&#10;ERROR   =0x0000000000000000&#10;RIP     =0x00000000001041F2&#10;CR2     =0x0000000000000000" @keydown.ctrl.enter="explain(input)" @keydown.meta.enter="explain(input)"></textarea>
-              <div class="paste-counter">{{ input.length.toLocaleString() }} / 65,536 characters</div>
-              <button class="primary-btn full" type="button" :disabled="!input.trim()" @click="explain(input)">Analyse panic <span class="button-arrow">↗</span></button>
-              <p class="helper-text">Paste the raw COM1 log, decoded QR text, or a structured report. Press Ctrl + Enter to analyse.</p>
-            </div>
+              <div v-if="issueStatus !== 'idle'" class="issue-footer">
+                <a :href="searchPage" target="_blank" rel="noopener noreferrer">Browse GitHub issues ↗</a>
+                <a v-if="newIssue" class="button button-primary" :href="newIssue" target="_blank" rel="noopener noreferrer">Create an issue →</a>
+              </div>
+            </section>
+
+            <details class="details-panel">
+              <summary>Technical details (optional) <span aria-hidden="true">⌄</span></summary>
+              <div class="details-body">
+                <p>Visible only on this device. Do not post this entire report publicly without reviewing it.</p>
+                <dl><div><dt>Exception</dt><dd>{{ result.vector ?? 'Not available' }}</dd></div><div v-if="result.fields.RIP"><dt>Instruction pointer</dt><dd><code>{{ result.fields.RIP }}</code></dd></div><div v-if="result.fields.ERROR"><dt>Error code</dt><dd><code>{{ result.fields.ERROR }}</code></dd></div></dl>
+                <pre>{{ result.raw }}</pre>
+              </div>
+            </details>
+            <button class="text-button copy-summary" type="button" @click="copySummary">{{ copied ? 'Summary copied ✓' : 'Copy safe summary ↗' }}</button>
           </div>
+        </section>
+      </div>
 
-          <div v-if="error" class="error-message" role="alert"><span>!</span>{{ error }}</div>
-          <div class="panel-bottom"><span class="shield-mark">◈</span><span>PRIVATE BY DESIGN</span><span class="bottom-right">CLIENT-SIDE PROCESSING</span></div>
+      <section id="how-to" class="instructions" aria-labelledby="instructions-heading">
+        <div class="instructions-heading"><span class="eyebrow">QUICK GUIDE</span><h2 id="instructions-heading">How to use the decoder</h2><p>No account or installation needed.</p></div>
+        <div class="guide-grid">
+          <div class="guide-item"><span>1</span><h3>Find the QR code</h3><p>When Australis displays an error screen, look for its diagnostic QR code.</p></div>
+          <div class="guide-item"><span>2</span><h3>Scan or upload it</h3><p>Open this website on your phone and scan the code. You can also upload a picture or paste the message.</p></div>
+          <div class="guide-item"><span>3</span><h3>Review the result</h3><p>Read the explanation. If the crash repeats, check GitHub for an existing issue or create a report.</p></div>
         </div>
-
-        <div ref="reportPanel" class="panel result-panel">
-          <div class="panel-heading results-heading"><div><div class="section-label">02 / ANALYSIS</div><h2>Diagnostic report</h2><p>Understand what went wrong and where to investigate.</p></div><button class="plain-reset" v-if="result" type="button" @click="reset">Clear ↗</button></div>
-          <template v-if="!result">
-            <div class="result-empty">
-              <div class="radar"><div class="radar-ring r1"></div><div class="radar-ring r2"></div><div class="radar-ring r3"></div><span class="radar-cross">✳</span></div>
-              <span class="waiting-status"><span class="waiting-dot"></span> AWAITING DIAGNOSTIC DATA</span>
-              <h3>No crash analysed yet</h3><p>Your decoded panic explanation will appear here, with technical evidence and suggested next steps.</p>
-              <button class="text-link" type="button" @click="loadSample">Try a sample kernel panic <span>↗</span></button>
-            </div>
-          </template>
-          <template v-else>
-            <div class="result-filled" aria-live="polite">
-              <div class="result-state" :class="result.valid ? 'state-panic' : 'state-unknown'"><span class="status-glyph">{{ result.valid ? '!' : '?' }}</span>{{ result.valid ? 'PANIC DATA DECODED' : 'UNRECOGNISED INPUT' }}<span class="state-vector" v-if="result.vector !== null">VECTOR {{ result.vector }}</span></div>
-              <h3 class="diagnosis-title">{{ result.title }}</h3>
-              <p class="diagnosis-summary">{{ result.summary }}</p>
-              <div v-if="result.possibleCauses.length" class="possible-causes">
-                <h4>What might have caused it?</h4>
-                <p>These are possibilities, not confirmed diagnoses.</p>
-                <ul><li v-for="(cause, index) in result.possibleCauses" :key="index">{{ cause }}</li></ul>
-              </div>
-              <div class="next-evidence"><strong>How to find the actual cause</strong><p>{{ result.nextEvidence }}</p></div>
-              <div class="certainty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 10v6m0-9h.01"/></svg>{{ result.certainty }}</div>
-              <div class="result-divider"></div>
-              <div class="results-subheading"><span>EVIDENCE</span><small>{{ result.findings.length }} FINDINGS</small></div>
-              <div class="findings" v-if="result.findings.length">
-                <div v-for="(item, index) in result.findings" :key="index" class="finding"><span>{{ item.label }}</span><strong>{{ item.value }}</strong></div>
-              </div>
-              <div class="results-subheading next-steps-heading"><span>RECOMMENDED CHECKS</span></div>
-              <ol class="actions"><li v-for="(action, index) in result.actions" :key="index">{{ action }}</li></ol>
-              <button class="details-toggle" type="button" :aria-expanded="visibleDetails" @click="visibleDetails = !visibleDetails"><span>Advanced details & raw payload</span><span>{{ visibleDetails ? '−' : '+' }}</span></button>
-              <div v-if="visibleDetails" class="advanced-details">
-                <div class="registers" v-if="registers.length"><div v-for="item in registers" :key="item.name"><span>{{ item.name }}</span><code>{{ item.value }}</code></div></div>
-                <div class="raw-top"><span>ORIGINAL PAYLOAD</span><button type="button" @click="copyText(result.raw, 'raw')">{{ copied === 'raw' ? 'Copied ✓' : 'Copy raw' }}</button></div>
-                <pre class="raw-data">{{ result.raw }}</pre>
-              </div>
-              <div class="result-buttons"><button class="secondary-btn" type="button" @click="copyText(result.report, 'report')">{{ copied === 'report' ? 'Copied ✓' : 'Copy report' }}</button><button class="secondary-btn" type="button" @click="downloadReport">↓ Download .txt</button></div>
-              <p class="disclaimer">Diagnostic interpretations are evidence-based suggestions, not proof of the underlying code defect.</p>
-            </div>
-          </template>
-          <div class="panel-bottom"><span class="shield-mark">◇</span><span>{{ result ? result.source.toUpperCase() : 'READY FOR INPUT' }}</span><span class="bottom-right">AUSTRALIS / X86-64</span></div>
-        </div>
-      </section>
-
-      <section class="lower-section">
-        <div class="info-card"><div class="mini-label">03 / THE FORMAT</div><div class="info-grid"><div><h2>Made for the Australis kernel.</h2><p>Already understands the existing <code>*** AUSTRALIS KERNEL PANIC ***</code> serial and framebuffer report. When you add QR rendering to the panic screen, use this compact, versioned format to keep the code easy to scan.</p><a href="https://github.com/Aurora-softwares/Australis-OS/blob/Development/tests/kernel/panic_boot_smoke.py" target="_blank" rel="noopener noreferrer" class="external-link">See existing panic test ↗</a></div><div class="code-example"><div class="code-top"><span><i class="code-dot"></i> EXAMPLE QR TEXT</span><button type="button" @click="copyText(compactExample, 'example')">{{ copied === 'example' ? 'Copied ✓' : 'Copy ↗' }}</button></div><code>{{ compactExample }}</code><div class="code-desc">AUP1 · vector · error bits · instruction pointer · stack pointer · fault address<br /><a :href="sampleQrUrl" target="_blank" rel="noopener noreferrer" class="sample-qr-link">Open a sample QR code ↗</a></div></div></div></div>
-        <div class="privacy-strip"><div class="privacy-icon">✳</div><div><strong>Your crashes stay yours.</strong><p>No API key, server, account, AI upload, or analytics. QR decoding and explanations run inside the browser.</p></div><span class="secure-status"><span></span> LOCAL ONLY</span></div>
+        <div class="guide-tip"><strong>No QR code?</strong> Use the <button type="button" class="text-button" @click="goToPaste">Paste text</button> option, or <a :href="sampleQrUrl" target="_blank" rel="noopener noreferrer">view an example QR code</a> to try the scanner.</div>
       </section>
     </main>
 
-    <footer class="site-footer wrap"><span>✳ AUSTRALIS OS <span class="muted">/ PANIC DECODER</span></span><span>BUILT FOR CLARITY, NOT GUESSWORK.</span><a href="https://github.com/Aurora-softwares/Australis-OS" target="_blank" rel="noopener noreferrer">OS SOURCE ↗</a></footer>
+    <footer class="site-footer container"><span>© Australis OS · Crash diagnostics</span><span>Decoded locally · GitHub lookup is optional</span><a href="https://github.com/Aurora-softwares/Australis-OS/issues" target="_blank" rel="noopener noreferrer">Support & issues ↗</a></footer>
   </div>
 </template>
