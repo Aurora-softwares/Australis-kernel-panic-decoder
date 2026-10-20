@@ -235,3 +235,11 @@ After a successful first load, the existing service worker caches the static app
 ## Licence
 
 MIT, see `LICENSE`.
+
+## Website update notification (v2.5.1)
+
+Every successful `Release` deployment publishes `version.json`, containing the website version and the published commit SHA. The app fetches it **from the network only** on startup, when returning to the tab, when reconnecting, and every 15 minutes while visible. When the build ID differs, visitors see **An update is available** with **Update now** and **Later**. Choosing **Update now** updates the service worker and reloads with a cache-busting URL; if there is an active crash report or pasted text, the website asks for confirmation so it isn't lost accidentally.
+
+The service worker caches only the public website assets and never caches `version.json` or diagnostic inputs. The worker gets a distinct cache ID per build, so new builds update the offline PWA. Checks fail quietly offline and resume when online. No crash data is transmitted to check for updates. The version displayed in the footer is the website version (not an Australis OS version).
+
+**First-time upgrade:** an existing v2.3 (or other older) offline app does not itself contain this update checker. Users must load v2.5.1 or newer once online (or refresh/reinstall that old PWA) to gain automatic update notifications for future releases. Only the `Release` branch deploys; `Development` builds cannot trigger notices until merged and published.
