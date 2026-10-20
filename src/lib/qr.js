@@ -1,4 +1,5 @@
 import jsQR from 'jsqr'
+import { parsePgm, pgmToRgba } from './pgm.js'
 
 /** QR scanning is entirely local, including video frames and uploaded images. */
 const MAX_FRAME_DIMENSION = 1280
@@ -21,6 +22,14 @@ export function scanVideoFrame(video, canvas) {
 }
 
 export async function scanImage(file) {
+  // The panic smoke test exports a raw 29x29 .pgm; standard browsers cannot
+  // render PGM via <img>, so decode and upscale its monochrome pixels locally.
+  if (file && (/\.pgm$/i.test(file.name || '') || /portable-graymap/i.test(file.type || ''))) {
+    if (file.size > 12 * 1024 * 1024) throw new Error('Image is too large. Use an image smaller than 12 MB.')
+    const pixels = pgmToRgba(parsePgm(await file.arrayBuffer()))
+    const result = jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: 'attemptBoth' })
+    return result?.data || null
+  }
   if (!file?.type?.startsWith('image/')) throw new Error('Please choose a PNG, JPG, WebP, or other supported image.')
   if (file.size > 12 * 1024 * 1024) throw new Error('Image is too large. Use an image smaller than 12 MB.')
   let bitmap = null

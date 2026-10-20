@@ -1,10 +1,10 @@
 # Australis Crash Diagnostics
 
-Version 2.2. A small, mobile-friendly Vue 3 application for **public** Australis OS kernel panic diagnosis. It reads a panic QR code or text locally, provides a safe plain-English explanation, and can optionally check public [Australis OS GitHub issues](https://github.com/Aurora-softwares/Australis-OS/issues) for potentially related reports.
+Version 2.3. A small, mobile-friendly Vue 3 application for **public** Australis OS kernel panic diagnosis. It reads a panic QR code or text locally, provides a safe plain-English explanation, and can optionally check public [Australis OS GitHub issues](https://github.com/Aurora-softwares/Australis-OS/issues) for potentially related reports.
 
 ## Features
 
-- **Three simple inputs:** scan live QR through the camera, upload a screenshot, or paste panic text. A sample report and sample QR are included.
+- **Three simple inputs:** scan live QR through the camera, upload a screenshot / PGM file, or paste panic text. A sample report and sample QR are included.
 - **Robust report quality checks:** warns when QR contents are unrelated, malformed, unsupported or missing RIP; offers a retry route rather than guessing.
 - **Confidence indicators:** separates the reported CPU exception, possible causes, and verified maintainer-curated known issues.
 - **Guided recovery:** optional three-question follow-up about startup, application use and recurrence adapts the next steps. No private answers are sent on scan.
@@ -22,7 +22,7 @@ Version 2.2. A small, mobile-friendly Vue 3 application for **public** Australis
 
 ### Privacy considerations
 
-QR decoding and diagnosis happen entirely in the browser. GitHub search is only performed after an explicit click. That search sends the error classification plus standard requests to `api.github.com`; GitHub receives typical connection metadata such as IP address when visited. Creating an issue opens GitHub and requires its usual account/sign-in steps. Users can always skip GitHub and still receive a local explanation. The web app has no telemetry. **Do not add tokens, secret environment values, private file contents or an internal symbol map to a public GitHub Pages repository**: static web assets are publicly readable.
+QR decoding and diagnosis happen entirely in the browser. AU1 fields are not assigned undocumented meanings. GitHub search is only performed after an explicit click. That search sends the error classification plus standard requests to `api.github.com`; GitHub receives typical connection metadata such as IP address when visited. Creating an issue opens GitHub and requires its usual account/sign-in steps. Users can always skip GitHub and still receive a local explanation. The web app has no telemetry. **Do not add tokens, secret environment values, private file contents or an internal symbol map to a public GitHub Pages repository**: static web assets are publicly readable.
 
 ## How visitors use it
 
@@ -33,7 +33,7 @@ QR decoding and diagnosis happen entirely in the browser. GitHub search is only 
 5. Review a curated known-issue match (if available); otherwise click **Check existing issues** for category-related GitHub reports. Related does not necessarily mean the same bug.
 6. If still necessary, expand the GitHub draft preview, explicitly approve any optional public source excerpt, tick the acknowledgement, and then open the GitHub issue draft. Review again on GitHub before submitting.
 
-Camera use requires HTTPS or localhost and camera permission. GitHub Pages serves HTTPS. The scanner accepts native Australis console panic text, JSON payloads, and the compact `AUP1` diagnostic format; no OS release version is required. Accurate source code lookup additionally requires a build fingerprint and code-base address.
+Camera use requires HTTPS or localhost and camera permission. GitHub Pages serves HTTPS. The scanner recognises native Australis console panic text, JSON payloads, older `AUP1` payloads, and the **new `AU1` QR transport**. The exact semantics of AU1's packed fields are not yet documented, so the app must not guess their meaning. No OS release version is required. Accurate source code lookup additionally requires a build fingerprint and code-base address.
 
 ## Local development
 
@@ -47,7 +47,7 @@ npm run dev
 Open `http://localhost:5173/`.
 
 ```sh
-npm test       # diagnostics, known issues, privacy, recovery and issue-link tests
+npm test       # AU1/PGM, diagnostics, known issues, privacy and issue-link tests
 npm run build  # production Vue bundle
 npm run preview
 ```
@@ -62,6 +62,29 @@ npm run preview
 The workflow automatically sets Vite's base path for repository Pages hosting. The GitHub issue destination is currently configured to **`Aurora-softwares/Australis-OS`**, in `src/lib/issues.js`. Change that single constant if you later move public issues to another repository.
 
 For Cloudflare Pages, choose the Vite preset, build command `npm run build`, output `dist`, and use the default `/` base path.
+
+## Current kernel QR output — AU1 compatibility
+
+The QEMU smoke test supplied by the kernel currently prints a diagnostic log containing:
+
+```text
+QR payload:    AU1:00:0000000000000000:0000000000000000:0000000000000000:0000000000000000
+QR dimensions: 29 x 29
+Black modules: 432
+QR image:      build/panic-qr-debug.pgm
+```
+
+**Only the value after `QR payload:` is encoded in the QR code.** `Panic entry`, `Scratch page`, `QR marker`, `QR result`, `QR dimensions`, `Black modules`, `SHA256` and `QR image` are **local smoke-test metadata**, not the kernel crash reason, and should not be treated as faulting RIP/CR2 or shared in a public issue.
+
+This build recognises the full `AU1` payload (74 characters), checks for exactly one two-digit hex field and four 16-digit hex fields, and recognises the supplied all-zero payload as a **QR generator test**, not a real CPU exception. Both pasted QR text and pasted smoke-test transcripts work. Invalid, truncated and unknown-version AU payloads receive a friendly retry message; GitHub reporting is blocked until a CPU exception has actually been established.
+
+A complete `AU1` QR can be scanned by phone camera or uploaded as PNG/JPG/WebP. The kernel-produced **`.pgm` test image can now be uploaded directly** (8-bit P2 or P5); the site pads and enlarges its 29×29 module matrix in the browser. `public/sample-au1-qr.png` and `public/sample-au1-qr.pgm` are generated test fixtures for this exact zero-filled string; they are not byte-for-byte copies of the kernel-produced image. The older sample QR remains available to demonstrate the full crash explanation workflow.
+
+### One kernel detail required to finish AU1 diagnosis
+
+**Please confirm exactly what the two-digit field (`00`) and the four 64-bit words represent and in which order** (for example: vector, RIP, error code, CR2 and RSP, *if* those are indeed the fields). The log demonstrates payload framing but does not document its semantics. Until confirmed, the site deliberately labels nonzero AU1 payloads as **readable but unmapped** and does not infer a fault type, look up source code, or create a misleading GitHub issue. Normal full panic text and earlier `AUP1`/JSON payloads continue to produce diagnoses.
+
+The lookup and known-issue matcher still need a build fingerprint plus a runtime executable code base for precise source mapping. This can be introduced later without an OS release version.
 
 ## Supported panic formats (maintainer notes — not shown to visitors)
 
@@ -121,7 +144,7 @@ If the kernel doesn't yet supply build/offset data, **normal diagnosis, guided r
 
 ## Source-code lookup: how to make it operational
 
-**The website-side lookup and GitHub issue integration are implemented, but no real Australis kernel mapping is bundled.** The `public/symbols/index.json` registry initially contains no builds. This is deliberate: a raw RIP value cannot be tied to a source line without a build-specific map. The C-backed Hydrogen `--debug` `.hymap.json` maps are **not** instruction-offset maps for Australis's freestanding `AUKR` binary.
+**The website-side lookup and GitHub issue integration are implemented, but no real Australis kernel mapping is bundled. The present AU1 test format does not yet declare build metadata or the meaning of its words.** The `public/symbols/index.json` registry initially contains no builds. This is deliberate: a raw RIP value cannot be tied to a source line without a build-specific map. The C-backed Hydrogen `--debug` `.hymap.json` maps are **not** instruction-offset maps for Australis's freestanding `AUKR` binary.
 
 To enable automatic lookup for a kernel build:
 

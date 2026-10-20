@@ -44,6 +44,7 @@ const safeExport = computed(() => safeDiagnosticText(result.value, context.value
 const issuePreview = computed(() => newIssue.value ? new URL(newIssue.value).searchParams.get('body') : '')
 const searchPage = computed(() => issueSearchPage(result.value))
 const sampleQrUrl = `${import.meta.env.BASE_URL}sample-panic-qr.png`
+const au1SampleUrl = `${import.meta.env.BASE_URL}sample-au1-qr.png`
 
 let stream = null
 let frameId = null
@@ -405,9 +406,9 @@ function exportPrivate() {
               <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="6" y="6" width="36" height="36" rx="8"/><path d="m13 32 9-10 6 6 5-6 6 10M15 16h.01" stroke-linecap="round"/></svg>
               <strong>{{ busy ? 'Reading image…' : 'Choose a QR code image' }}</strong>
               <span>Click to browse, or drag a screenshot here.</span>
-              <span class="file-hint">PNG, JPG or WebP · up to 12 MB</span>
+              <span class="file-hint">PNG, JPG, WebP or PGM · up to 12 MB</span>
             </div>
-            <input ref="filePicker" type="file" accept="image/png,image/jpeg,image/webp,image/*" class="visually-hidden" aria-label="Upload QR code screenshot" @change="onChoose" />
+            <input ref="filePicker" type="file" accept="image/png,image/jpeg,image/webp,image/*,.pgm,image/x-portable-graymap,application/x-portable-graymap" class="visually-hidden" aria-label="Upload QR code screenshot" @change="onChoose" />
             <p class="field-note">{{ fileName ? `Selected: ${fileName}` : 'Your image is decoded on your device. It is not uploaded.' }}</p>
           </div>
 
@@ -415,7 +416,7 @@ function exportPrivate() {
             <label class="input-label" for="panic-text">Paste the error message or QR code text</label>
             <textarea id="panic-text" v-model="input" maxlength="65536" spellcheck="false" placeholder="Paste the panic message shown by Australis OS…" @keydown.ctrl.enter="explain(input)" @keydown.meta.enter="explain(input)"></textarea>
             <button class="button button-primary full" type="button" :disabled="!input.trim()" @click="explain(input)">Explain error <span aria-hidden="true">→</span></button>
-            <p class="field-note">You can also paste the text from the kernel's serial output.</p>
+            <p class="field-note">You can also paste the text from the kernel's serial output or the full QR generator test log.</p>
           </div>
 
           <div v-if="error" class="notice-error" role="alert">{{ error }}</div>
@@ -435,11 +436,11 @@ function exportPrivate() {
             <p>Once you scan or paste an error, we'll explain what it means and help you check for existing reports.</p>
           </div>
           <div v-else-if="!result.valid" class="result-content" aria-live="polite">
-            <span class="status status-muted">Could not identify a panic</span>
+            <span class="status status-muted">{{ result.format === 'AU1' ? 'Australis QR recognised' : 'Could not identify a panic' }}</span>
             <h3>{{ plain.title }}</h3>
             <p class="explanation">{{ plain.description }}</p>
             <p class="guidance">{{ plain.guidance }}</p>
-            <button type="button" class="button button-subtle" @click="reset">Try again</button>
+            <button type="button" class="button button-subtle" @click="reset">{{ result.inputStatus === 'test' ? 'Scan a real crash' : 'Try again' }}</button>
           </div>
           <div v-else class="result-content" aria-live="polite">
             <span class="status status-warning"><span></span> Kernel panic detected</span>
@@ -568,10 +569,10 @@ function exportPrivate() {
         <div class="instructions-heading"><span class="eyebrow">QUICK GUIDE</span><h2 id="instructions-heading">How to use the decoder</h2><p>No account or installation needed.</p></div>
         <div class="guide-grid">
           <div class="guide-item"><span>1</span><h3>Find the QR code</h3><p>When Australis displays an error screen, look for its diagnostic QR code.</p></div>
-          <div class="guide-item"><span>2</span><h3>Scan or upload it</h3><p>Open this website on your phone and scan the code. You can also upload a picture or paste the message.</p></div>
+          <div class="guide-item"><span>2</span><h3>Scan or upload it</h3><p>Open this website on your phone and scan the code. You can also upload a picture, the kernel’s PGM test image, or paste the message.</p></div>
           <div class="guide-item"><span>3</span><h3>Follow the next steps</h3><p>Answer optional recovery questions, save a safe summary, or check GitHub for existing reports before creating a new one.</p></div>
         </div>
-        <div class="guide-tip"><strong>No QR code?</strong> Use the <button type="button" class="text-button" @click="goToPaste">Paste text</button> option, or <a :href="sampleQrUrl" target="_blank" rel="noopener noreferrer">view an example QR code</a> to try the scanner.</div>
+        <div class="guide-tip"><strong>No QR code?</strong> Use the <button type="button" class="text-button" @click="goToPaste">Paste text</button> option, or <a :href="sampleQrUrl" target="_blank" rel="noopener noreferrer">view an example QR code</a> to try the scanner. You can also <a :href="au1SampleUrl" target="_blank" rel="noopener noreferrer">view the new AU1 test QR</a> (a scanner check, not a real crash).</div>
       </section>
     </main>
 

@@ -4,6 +4,8 @@
  * JSON reports, and the optional AUP1 QR format documented in README.md.
  */
 
+import { parseAu1 } from './au1.js'
+
 export const SAMPLE_PANIC = `*** AUSTRALIS KERNEL PANIC ***
 Fatal CPU exception; interrupts are disabled.
 VECTOR  =0x000000000000000E
@@ -191,6 +193,30 @@ export function diagnosePanic(input) {
   const raw = String(input ?? '').replace(/\0/g, '').trim()
   if (!raw) throw new Error('Paste a panic report, scan a QR code, or upload a QR image first.')
   if (raw.length > 65536) throw new Error('The input is too large (maximum 64 KiB). Provide a shorter panic report.')
+
+  const au1 = parseAu1(raw)
+  if (au1) {
+    const descriptions = {
+      test: 'QR test payload detected',
+      unmapped: 'AU1 diagnostic QR detected',
+      malformed: 'Incomplete AU1 QR payload',
+      unsupported: 'Unsupported QR format version',
+    }
+    const title = descriptions[au1.kind]
+    return {
+      valid: false,
+      format: 'AU1',
+      inputStatus: au1.kind,
+      source: 'Australis AU1 QR payload',
+      fields: {}, vector: null, title,
+      summary: au1.reason,
+      certainty: 'No CPU exception or root cause identified',
+      findings: [], actions: [], possibleCauses: [],
+      nextEvidence: 'Keep the original serial panic output. Confirm the AU1 field definitions before interpreting packed values.',
+      raw, qr: au1,
+      report: `Australis AU1 diagnostic data\n${title}\n${au1.reason}\n`,
+    }
+  }
 
   const fields = {}
   let source = 'Unrecognised text'

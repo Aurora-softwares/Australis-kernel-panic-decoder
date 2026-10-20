@@ -27,6 +27,18 @@ const EXPLANATIONS = {
 }
 
 export function publicDiagnosis(result) {
+  if (result?.format === 'AU1') {
+    const isTest = result.inputStatus === 'test'
+    return {
+      title: result.title,
+      description: result.summary,
+      guidance: isTest
+        ? 'When Australis displays a real panic, scan that QR code or paste the complete serial panic report. Do not open a GitHub issue for this test code.'
+        : result.inputStatus === 'unmapped'
+          ? 'Keep the QR code and use the full serial panic report for diagnosis until the kernel defines which value represents each register.'
+          : 'Try scanning again, upload a clearer image, or paste the complete serial panic message.',
+    }
+  }
   if (!result?.valid) return { title: 'No crash detected', description: 'This does not look like an Australis OS panic report. Try scanning the QR code again or pasting the full error.', guidance: 'Make sure the complete QR code or panic message is visible.' }
   const description = EXPLANATIONS[result.vector] || 'Australis OS encountered an unexpected condition and stopped to prevent further problems.'
   const extra = result.vector === 18

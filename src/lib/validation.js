@@ -3,6 +3,14 @@ const supportedVector = (value) => Number.isInteger(value) && ((value >= 0 && va
 const hexNumber = (value) => typeof value === 'string' && /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value.trim())
 
 export function assessReport(report) {
+  if (report?.format === 'AU1') return {
+    level: report.inputStatus === 'test' ? 'test' : 'unsupported',
+    title: report.title,
+    explanation: report.summary,
+    next: report.inputStatus === 'test'
+      ? 'The QR generator is working, but this sample contains no actual exception data.'
+      : 'Use the full serial panic report for now, or confirm the on-wire AU1 field mapping.',
+  }
   if (!report?.valid) return {
     level: 'invalid', title: 'This is not a recognised Australis crash report',
     explanation: 'The QR code may contain unrelated text, a URL, or an unsupported format.',
