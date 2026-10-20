@@ -27,7 +27,7 @@ const EXPLANATIONS = {
 }
 
 export function publicDiagnosis(result) {
-  if (result?.format === 'AU1') {
+  if (result?.format === 'AU1' && !result.valid) {
     const isTest = result.inputStatus === 'test'
     return {
       title: result.title,
@@ -35,12 +35,21 @@ export function publicDiagnosis(result) {
       guidance: isTest
         ? 'When Australis displays a real panic, scan that QR code or paste the complete serial panic report. Do not open a GitHub issue for this test code.'
         : result.inputStatus === 'unmapped'
-          ? 'Keep the QR code and use the full serial panic report for diagnosis until the kernel defines which value represents each register.'
+          ? 'Try scanning again, upload a clearer image, or paste the complete serial panic report.'
           : 'Try scanning again, upload a clearer image, or paste the complete serial panic message.',
     }
   }
   if (!result?.valid) return { title: 'No crash detected', description: 'This does not look like an Australis OS panic report. Try scanning the QR code again or pasting the full error.', guidance: 'Make sure the complete QR code or panic message is visible.' }
-  const description = EXPLANATIONS[result.vector] || 'Australis OS encountered an unexpected condition and stopped to prevent further problems.'
+  let description = EXPLANATIONS[result.vector] || 'Australis OS encountered an unexpected condition and stopped to prevent further problems.'
+  if (result.vector === 14) {
+    // Translate CPU page-fault error bits without ever displaying raw addresses.
+    try {
+      const flags = BigInt(result.fields?.ERROR ?? '')
+      const access = (flags & 16n) ? 'execute code from' : (flags & 2n) ? 'write to' : 'read from'
+      const mapping = (flags & 1n) ? 'memory that was protected against that operation' : 'memory that was not mapped'
+      description = `The operating system tried to ${access} ${mapping}.`
+    } catch { /* Keep the generic explanation when the error code is unavailable. */ }
+  }
   const extra = result.vector === 18
     ? ' This could relate to the computer or virtual machine, not necessarily a software defect.'
     : ''

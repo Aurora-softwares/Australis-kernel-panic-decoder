@@ -134,6 +134,14 @@ function numeric(text) {
   } catch { return null }
 }
 
+function unsigned64(text) {
+  if (typeof text !== 'string' || !/^(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) return null
+  try {
+    const value = BigInt(text)
+    return value >= 0n && value <= 0xFFFFFFFFFFFFFFFFn ? value : null
+  } catch { return null }
+}
+
 function isZeroHex(text) {
   if (!text || !/^(?:0x[0-9a-f]+|[0-9]+)$/i.test(text)) return false
   try { return BigInt(text) === 0n } catch { return false }
@@ -142,17 +150,17 @@ function isZeroHex(text) {
 function asHex(value) { return `0x${value.toString(16).toUpperCase()}` }
 
 function pageFaultFindings(fields, add) {
-  const error = numeric(fields.ERROR)
+  const error = unsigned64(fields.ERROR)
   if (error === null) {
     add('Error-code bits', 'Not supplied; memory access type and permission cause are unknown.')
   } else {
-    add('Mapping', (error & 1) ? 'The page was present, but access violated protection rules.' : 'The page was not present in the active address space.')
-    add('Operation', (error & 16) ? 'Instruction fetch (attempted execution)' : (error & 2) ? 'Memory write' : 'Memory read')
-    add('Privilege', (error & 4) ? 'Access originated in user mode' : 'Access originated in supervisor mode')
-    if (error & 8) add('Page tables', 'A reserved bit was set in a paging-structure entry.')
-    if (error & 32) add('Protection key', 'A protection-key check blocked the access.')
-    if (error & 64) add('Shadow stack', 'The access involved a shadow-stack protection check.')
-    if (error & 32768) add('SGX', 'The processor flagged an SGX-specific fault.')
+    add('Mapping', (error & 1n) ? 'The page was present, but access violated protection rules.' : 'The page was not present in the active address space.')
+    add('Operation', (error & 16n) ? 'Instruction fetch (attempted execution)' : (error & 2n) ? 'Memory write' : 'Memory read')
+    add('Privilege', (error & 4n) ? 'Access originated in user mode' : 'Access originated in supervisor mode')
+    if (error & 8n) add('Page tables', 'A reserved bit was set in a paging-structure entry.')
+    if (error & 32n) add('Protection key', 'A protection-key check blocked the access.')
+    if (error & 64n) add('Shadow stack', 'The access involved a shadow-stack protection check.')
+    if (error & 32768n) add('SGX', 'The processor flagged an SGX-specific fault.')
   }
   if (fields.CR2) {
     add('Faulting address (CR2)', `${fields.CR2}${isZeroHex(fields.CR2) ? ' — null page / address zero' : ''}`)
@@ -195,12 +203,15 @@ export function diagnosePanic(input) {
   if (raw.length > 65536) throw new Error('The input is too large (maximum 64 KiB). Provide a shorter panic report.')
 
   const au1 = parseAu1(raw)
-  if (au1) {
+  // A complete AU1 record is a first-class panic report. Reuse the same
+  // x86-64 exception decoder as the serial/AUP1 paths, rather than attempting
+  // to explain packed fields using a separate set of heuristics.
+  if (au1 && au1.kind !== 'crash') {
     const descriptions = {
       test: 'QR test payload detected',
-      unmapped: 'AU1 diagnostic QR detected',
       malformed: 'Incomplete AU1 QR payload',
       unsupported: 'Unsupported QR format version',
+      'unsupported-vector': 'Unrecognised exception number',
     }
     const title = descriptions[au1.kind]
     return {
@@ -210,20 +221,22 @@ export function diagnosePanic(input) {
       source: 'Australis AU1 QR payload',
       fields: {}, vector: null, title,
       summary: au1.reason,
-      certainty: 'No CPU exception or root cause identified',
+      certainty: 'No supported CPU exception or root cause identified',
       findings: [], actions: [], possibleCauses: [],
-      nextEvidence: 'Keep the original serial panic output. Confirm the AU1 field definitions before interpreting packed values.',
+      nextEvidence: 'Save the original panic report, then scan again or paste the full serial output.',
       raw, qr: au1,
       report: `Australis AU1 diagnostic data\n${title}\n${au1.reason}\n`,
     }
   }
 
-  const fields = {}
-  let source = 'Unrecognised text'
-  if (parseCompact(raw, fields)) source = 'Australis AUP1 QR payload'
-  else if (parseJson(raw, fields)) source = 'Structured JSON report'
-  else if (parseAustralisText(raw, fields)) source = 'Australis console report'
-  else if (PANIC_SIGNATURE.test(raw)) source = 'Unstructured panic message'
+  const fields = au1?.fields ? { ...au1.fields } : {}
+  let source = au1 ? 'Australis AU1 QR payload' : 'Unrecognised text'
+  if (!au1) {
+    if (parseCompact(raw, fields)) source = 'Australis AUP1 QR payload'
+    else if (parseJson(raw, fields)) source = 'Structured JSON report'
+    else if (parseAustralisText(raw, fields)) source = 'Australis console report'
+    else if (PANIC_SIGNATURE.test(raw)) source = 'Unstructured panic message'
+  }
 
   const vector = numeric(fields.VECTOR)
   const known = vector !== null && (VECTORS[vector] || (vector >= 0 && vector <= 31))
@@ -255,10 +268,10 @@ export function diagnosePanic(input) {
         : 'Capture the saved RIP and the instruction bytes at that address, then match them to the correct kernel binary.'
     }
     if (vector === 14) {
-      const bits = numeric(fields.ERROR)
-      const operation = bits === null ? 'access memory' : (bits & 16) ? 'execute code from memory' : (bits & 2) ? 'write to memory' : 'read from memory'
+      const bits = unsigned64(fields.ERROR)
+      const operation = bits === null ? 'access memory' : (bits & 16n) ? 'execute code from memory' : (bits & 2n) ? 'write to memory' : 'read from memory'
       const address = fields.CR2 ? ` at ${fields.CR2}` : ''
-      const issue = bits === null ? 'The error code is missing, so the precise access violation is unknown.' : (bits & 1) ? 'The page existed but its permissions denied that access.' : 'The needed page was not mapped.'
+      const issue = bits === null ? 'The error code is missing, so the precise access violation is unknown.' : (bits & 1n) ? 'The page existed but its permissions denied that access.' : 'The needed page was not mapped.'
       summary = `Australis tried to ${operation}${address}. ${issue} The CPU raised a page fault and the kernel halted to avoid continuing after a fatal supervisor exception.`
       if (fields.CR2 && isZeroHex(fields.CR2)) {
         summary += ' Address zero suggests a null pointer or the deliberate debug panic test; the report alone cannot distinguish them.'
@@ -312,6 +325,7 @@ export function diagnosePanic(input) {
 
   const result = {
     valid: !!hasPanic,
+    ...(au1 ? { format: 'AU1', inputStatus: 'crash', qr: au1 } : {}),
     source,
     fields,
     vector,

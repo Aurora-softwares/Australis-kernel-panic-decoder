@@ -41,20 +41,85 @@ test('pasted smoke transcript extracts only the QR content', () => {
   assert.equal(report.vector, null)
 })
 
-test('AU1 nonzero data parses without guessing header or 64-bit word meanings', () => {
+test('AU1 nonzero data maps exactly to vector, error, RIP, RSP, CR2', () => {
   const qrText = 'AU1:06:0000000000001000:000000000001ABCD:00000000000FFFFF:000000000000000E'
   const parsed = parseAu1(qrText)
-  assert.equal(parsed.kind, 'unmapped')
+  assert.equal(parsed.kind, 'crash')
   assert.equal(parsed.header, '06')
-  assert.equal(parsed.words.length, 4)
+  assert.equal(parsed.vector, 6)
+  assert.deepEqual(parsed.words, [
+    '0000000000001000', '000000000001ABCD', '00000000000FFFFF', '000000000000000E',
+  ])
   const report = diagnosePanic(qrText)
-  assert.equal(report.valid, false)
-  assert.equal(report.vector, null)
-  assert.deepEqual(report.fields, {})
+  assert.equal(report.valid, true)
+  assert.equal(report.format, 'AU1')
+  assert.equal(report.source, 'Australis AU1 QR payload')
+  assert.equal(report.vector, 6)
+  assert.equal(report.fields.ERROR, '0x0000000000001000')
+  assert.equal(report.fields.RIP, '0x000000000001ABCD')
+  assert.equal(report.fields.RSP, '0x00000000000FFFFF')
+  assert.equal(report.fields.CR2, '0x000000000000000E')
+  assert.equal(report.title, 'Invalid opcode')
+  assert.match(report.findings.map(x => x.value).join(' '), /CR2 is only meaningful for page faults/)
+  assert.equal(assessReport(report).level, 'complete')
   assert.equal(crashSignature(report), null)
+  assert.ok(newIssueUrl(report))
+  assert.match(issueSearchQuery(report), /invalid opcode/)
+})
+
+test('AU1 real page-fault QR gets non-present memory-read diagnosis', () => {
+  // Synthetic instruction and stack addresses; not taken from a real crash.
+  const qrText = 'AU1:0E:0000000000000000:0000000000012345:0000000000023456:0000000000000000'
+  const report = diagnosePanic(qrText)
+  assert.equal(report.valid, true)
+  assert.equal(report.vector, 14)
+  assert.equal(report.title, 'Page fault')
+  assert.equal(report.fields.ERROR, '0x0000000000000000')
+  assert.equal(report.fields.CR2, '0x0000000000000000')
+  assert.match(report.findings.map(x => x.value).join(' '), /Memory read/)
+  assert.match(report.findings.map(x => x.value).join(' '), /page was not present/)
+  assert.match(report.summary, /Address zero suggests a null pointer or the deliberate debug panic test/)
+  assert.equal(assessReport(report).level, 'complete')
+  assert.match(publicDiagnosis(report).description, /memory/i)
+  const safe = safeDiagnosticText(report, DEFAULT_CONTEXT)
+  assert.doesNotMatch(safe, /12345|23456|CR2|RIP|0x/i)
+  const issueUrl = newIssueUrl(report)
+  const issue = new URL(issueUrl)
+  assert.match(issue.searchParams.get('body'), /Exception vector: 14/)
+  assert.doesNotMatch(decodeURIComponent(issueUrl), /12345|23456|0x0000000000000000|RIP|CR2|RSP/)
+  assert.equal(crashSignature(report), null) // no build ID / runtime code base
+})
+
+test('AU1 parses hex vector rather than decimal and preserves full 64-bit values', () => {
+  const report = diagnosePanic('AU1:14:0000000000000000:FFFFFFFFFFFFFFFF:8000000000000000:0000000000000000')
+  assert.equal(report.valid, true)
+  assert.equal(report.vector, 20)  // hex 0x14, not decimal 14
+  assert.equal(report.fields.RIP, '0xFFFFFFFFFFFFFFFF')
+  assert.equal(report.fields.RSP, '0x8000000000000000')
+  assert.equal(report.title, 'Virtualization exception')
+})
+
+test('AU1 preserves a real vector-zero event when CPU data are not all zero', () => {
+  const report = diagnosePanic('AU1:00:0000000000000000:0000000000012345:0000000000023456:0000000000000000')
+  assert.equal(report.valid, true)
+  assert.equal(report.vector, 0)
+  assert.equal(report.title, 'Divide error')
+})
+
+test('AU1 accepts case and optional spaces around colons in pasted data', () => {
+  const spaced = 'au1 : 0e : 0000000000000003 : 0000000000012345 : 0000000000023456 : 0000000000000080'
+  const report = diagnosePanic(spaced)
+  assert.equal(report.vector, 14)
+  assert.equal(report.title, 'Page fault')
+  assert.match(report.findings.map(x => x.value).join(' '), /Memory write/)
+  assert.match(report.findings.map(x => x.value).join(' '), /page was present/)
+})
+
+test('AU1 refuses out-of-range CPU exception without publishing an issue', () => {
+  const report = diagnosePanic('AU1:80:0000000000000000:0000000000012345:0000000000023456:0000000000000000')
+  assert.equal(report.valid, false)
+  assert.equal(report.inputStatus, 'unsupported-vector')
   assert.equal(newIssueUrl(report), null)
-  assert.equal(issueSearchQuery(report), null)
-  assert.match(publicDiagnosis(report).guidance, /serial panic/i)
 })
 
 test('truncated, corrupt and future QR versions are rejected without bogus diagnosis', () => {

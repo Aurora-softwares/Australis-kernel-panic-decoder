@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { diagnosePanic, SAMPLE_PANIC } from './lib/diagnose.js'
+import { AU1_PAGE_FAULT_EXAMPLE } from './lib/au1.js'
 import { publicDiagnosis } from './lib/public-diagnosis.js'
 import { issueSearchPage, newIssueUrl, searchPublicIssues } from './lib/issues.js'
 import { scanImage, scanVideoFrame } from './lib/qr.js'
@@ -45,6 +46,7 @@ const issuePreview = computed(() => newIssue.value ? new URL(newIssue.value).sea
 const searchPage = computed(() => issueSearchPage(result.value))
 const sampleQrUrl = `${import.meta.env.BASE_URL}sample-panic-qr.png`
 const au1SampleUrl = `${import.meta.env.BASE_URL}sample-au1-qr.png`
+const au1CrashSampleUrl = `${import.meta.env.BASE_URL}sample-au1-crash-qr.png`
 
 let stream = null
 let frameId = null
@@ -186,6 +188,11 @@ function goToPaste() {
 function trySample() {
   mode.value = 'paste'
   explain(SAMPLE_PANIC)
+}
+
+function tryAu1Sample() {
+  mode.value = 'paste'
+  explain(AU1_PAGE_FAULT_EXAMPLE)
 }
 
 function reset() {
@@ -420,7 +427,7 @@ function exportPrivate() {
           </div>
 
           <div v-if="error" class="notice-error" role="alert">{{ error }}</div>
-          <div class="sample-row">Don't have a QR code yet? <button type="button" class="text-button" @click="trySample">Try an example →</button></div>
+          <div class="sample-row">Don't have a QR code yet? <button type="button" class="text-button" @click="tryAu1Sample">Try an AU1 example →</button></div>
         </section>
 
         <section ref="reportPanel" class="card diagnosis-card" aria-labelledby="result-heading">
@@ -572,7 +579,7 @@ function exportPrivate() {
           <div class="guide-item"><span>2</span><h3>Scan or upload it</h3><p>Open this website on your phone and scan the code. You can also upload a picture, the kernel’s PGM test image, or paste the message.</p></div>
           <div class="guide-item"><span>3</span><h3>Follow the next steps</h3><p>Answer optional recovery questions, save a safe summary, or check GitHub for existing reports before creating a new one.</p></div>
         </div>
-        <div class="guide-tip"><strong>No QR code?</strong> Use the <button type="button" class="text-button" @click="goToPaste">Paste text</button> option, or <a :href="sampleQrUrl" target="_blank" rel="noopener noreferrer">view an example QR code</a> to try the scanner. You can also <a :href="au1SampleUrl" target="_blank" rel="noopener noreferrer">view the new AU1 test QR</a> (a scanner check, not a real crash).</div>
+        <div class="guide-tip"><strong>No QR code?</strong> Use the <button type="button" class="text-button" @click="goToPaste">Paste text</button> option, or <a :href="sampleQrUrl" target="_blank" rel="noopener noreferrer">view an example QR code</a> to try the scanner. Try <a :href="au1CrashSampleUrl" target="_blank" rel="noopener noreferrer">a complete AU1 crash example</a> (synthetic data), or <a :href="au1SampleUrl" target="_blank" rel="noopener noreferrer">the zero-filled QR generator test</a>.</div>
       </section>
     </main>
 

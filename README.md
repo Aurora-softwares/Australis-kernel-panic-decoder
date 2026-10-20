@@ -1,6 +1,6 @@
 # Australis Crash Diagnostics
 
-Version 2.3. A small, mobile-friendly Vue 3 application for **public** Australis OS kernel panic diagnosis. It reads a panic QR code or text locally, provides a safe plain-English explanation, and can optionally check public [Australis OS GitHub issues](https://github.com/Aurora-softwares/Australis-OS/issues) for potentially related reports.
+Version 2.4. A small, mobile-friendly Vue 3 application for **public** Australis OS kernel panic diagnosis. It reads a panic QR code or text locally, provides a safe plain-English explanation, and can optionally check public [Australis OS GitHub issues](https://github.com/Aurora-softwares/Australis-OS/issues) for potentially related reports.
 
 ## Features
 
@@ -22,7 +22,7 @@ Version 2.3. A small, mobile-friendly Vue 3 application for **public** Australis
 
 ### Privacy considerations
 
-QR decoding and diagnosis happen entirely in the browser. AU1 fields are not assigned undocumented meanings. GitHub search is only performed after an explicit click. That search sends the error classification plus standard requests to `api.github.com`; GitHub receives typical connection metadata such as IP address when visited. Creating an issue opens GitHub and requires its usual account/sign-in steps. Users can always skip GitHub and still receive a local explanation. The web app has no telemetry. **Do not add tokens, secret environment values, private file contents or an internal symbol map to a public GitHub Pages repository**: static web assets are publicly readable.
+QR decoding and diagnosis happen entirely in the browser. The confirmed AU1 QR fields are decoded locally without sending their values to GitHub. GitHub search is only performed after an explicit click. That search sends the error classification plus standard requests to `api.github.com`; GitHub receives typical connection metadata such as IP address when visited. Creating an issue opens GitHub and requires its usual account/sign-in steps. Users can always skip GitHub and still receive a local explanation. The web app has no telemetry. **Do not add tokens, secret environment values, private file contents or an internal symbol map to a public GitHub Pages repository**: static web assets are publicly readable.
 
 ## How visitors use it
 
@@ -33,7 +33,7 @@ QR decoding and diagnosis happen entirely in the browser. AU1 fields are not ass
 5. Review a curated known-issue match (if available); otherwise click **Check existing issues** for category-related GitHub reports. Related does not necessarily mean the same bug.
 6. If still necessary, expand the GitHub draft preview, explicitly approve any optional public source excerpt, tick the acknowledgement, and then open the GitHub issue draft. Review again on GitHub before submitting.
 
-Camera use requires HTTPS or localhost and camera permission. GitHub Pages serves HTTPS. The scanner recognises native Australis console panic text, JSON payloads, older `AUP1` payloads, and the **new `AU1` QR transport**. The exact semantics of AU1's packed fields are not yet documented, so the app must not guess their meaning. No OS release version is required. Accurate source code lookup additionally requires a build fingerprint and code-base address.
+Camera use requires HTTPS or localhost and camera permission. GitHub Pages serves HTTPS. The scanner recognises native Australis console panic text, JSON payloads, older `AUP1` payloads, and the **new `AU1` QR transport**. The AU1 format has a confirmed field layout and is fully supported for basic CPU exception diagnosis. No OS release version is required. Accurate source code lookup additionally requires a build fingerprint and code-base address.
 
 ## Local development
 
@@ -65,26 +65,38 @@ For Cloudflare Pages, choose the Vite preset, build command `npm run build`, out
 
 ## Current kernel QR output — AU1 compatibility
 
-The QEMU smoke test supplied by the kernel currently prints a diagnostic log containing:
+**AU1 is now fully decoded for CPU exception diagnosis.** It is a QR *format* identifier, not an Australis OS version. Its exact field order is confirmed:
 
 ```text
-QR payload:    AU1:00:0000000000000000:0000000000000000:0000000000000000:0000000000000000
-QR dimensions: 29 x 29
-Black modules: 432
-QR image:      build/panic-qr-debug.pgm
+AU1:VV:EEEEEEEEEEEEEEEE:IIIIIIIIIIIIIIII:SSSSSSSSSSSSSSSS:AAAAAAAAAAAAAAAA
+    │            │                │                │                └─ CR2 (fault address)
+    │            │                │                └────────────────── RSP (stack pointer)
+    │            │                └─────────────────────────────────── RIP (instruction pointer)
+    │            └──────────────────────────────────────────────────── 64-bit CPU error code
+    └───────────────────────────────────────────────────────────────── CPU exception vector (hex)
 ```
 
-**Only the value after `QR payload:` is encoded in the QR code.** `Panic entry`, `Scratch page`, `QR marker`, `QR result`, `QR dimensions`, `Black modules`, `SHA256` and `QR image` are **local smoke-test metadata**, not the kernel crash reason, and should not be treated as faulting RIP/CR2 or shared in a public issue.
+`VV` is **exactly two hexadecimal digits**, so `0E` means exception vector **14 decimal**, a page fault. All other fields are exactly **16 hexadecimal digits each**, preserving the full 64-bit register value. A real example's hex words can be longer than JavaScript's safe integer range, so the website retains them without numeric rounding. `CR2` identifies the faulting memory address **only for page faults**; for other exceptions it must not be treated as their fault location.
 
-This build recognises the full `AU1` payload (74 characters), checks for exactly one two-digit hex field and four 16-digit hex fields, and recognises the supplied all-zero payload as a **QR generator test**, not a real CPU exception. Both pasted QR text and pasted smoke-test transcripts work. Invalid, truncated and unknown-version AU payloads receive a friendly retry message; GitHub reporting is blocked until a CPU exception has actually been established.
+**Illustrative AU1 sample, not from a real user's device:**
 
-A complete `AU1` QR can be scanned by phone camera or uploaded as PNG/JPG/WebP. The kernel-produced **`.pgm` test image can now be uploaded directly** (8-bit P2 or P5); the site pads and enlarges its 29×29 module matrix in the browser. `public/sample-au1-qr.png` and `public/sample-au1-qr.pgm` are generated test fixtures for this exact zero-filled string; they are not byte-for-byte copies of the kernel-produced image. The older sample QR remains available to demonstrate the full crash explanation workflow.
+```text
+AU1:0E:0000000000000000:0000000000012345:0000000000023456:0000000000000000
+```
 
-### One kernel detail required to finish AU1 diagnosis
+This identifies page fault `0x0E` (14), CPU error code zero (an unmapped-memory read from supervisor mode), synthetic RIP `0x12345`, synthetic RSP `0x23456`, and fault address `0x0`. A zero fault address is **consistent with** a null pointer or an intentional debug test; the QR alone does **not prove** the root cause. The example is available as `public/sample-au1-crash-qr.png` or `public/sample-au1-crash-qr.pgm`, and via the website's **Try an AU1 example** button.
 
-**Please confirm exactly what the two-digit field (`00`) and the four 64-bit words represent and in which order** (for example: vector, RIP, error code, CR2 and RSP, *if* those are indeed the fields). The log demonstrates payload framing but does not document its semantics. Until confirmed, the site deliberately labels nonzero AU1 payloads as **readable but unmapped** and does not infer a fault type, look up source code, or create a misleading GitHub issue. Normal full panic text and earlier `AUP1`/JSON payloads continue to produce diagnoses.
+The original all-zero generator fixture is also supported:
 
-The lookup and known-issue matcher still need a build fingerprint plus a runtime executable code base for precise source mapping. This can be introduced later without an OS release version.
+```text
+QR payload: AU1:00:0000000000000000:0000000000000000:0000000000000000:0000000000000000
+```
+
+When **every numeric value is zero**, it is classified as a *QR generator test*, not a real CPU divide exception. A vector `00` with nonzero crash context is decoded normally as a divide-error exception. Pasting the full smoke-test log works because the parser extracts only the `QR payload:` line, ignoring `Panic entry`, `Scratch page`, `QR result`, dimensions, SHA256 and the local `.pgm` path. Those log values are not included in public GitHub issues. A real AU1 QR immediately receives a normal diagnosis, guided recovery instructions, privacy-safe report export, and optional category-only GitHub lookup. Incomplete and unsupported payloads receive a retry message and cannot generate a misleading issue draft.
+
+The site supports PNG/JPG/WebP uploads and kernel-produced PGM files (8-bit P2 or P5), plus live camera scanning. The example PGM file is padded/enlarged by the scanner in the browser. Every report is processed locally.
+
+**Limitation:** AU1 currently does **not** include a kernel build fingerprint or the runtime executable code base. Therefore, automatic **source-line identification and precise curated known-issue matching** cannot be performed from an AU1 QR alone. The website will *not* guess a source location or claim a confirmed bug match solely from vector 14. Adding `BUILD` and `KBASE` metadata to a future format, or supplying a verified matching map another way, can enable those advanced features without formal OS versioning. Existing full serial reports and older AUP1/JSON inputs remain supported.
 
 ## Supported panic formats (maintainer notes — not shown to visitors)
 
@@ -98,7 +110,7 @@ RIP     =0x0000000000012345
 RSP     =0x0000000000023456
 ```
 
-Recommended short QR payload (source lookup also uses optional `b` and `kb` fields):
+Older optional AUP1 payload (still supported for backwards compatibility and source lookup via `b` and `kb` fields):
 
 ```text
 AUP1;v=6;e=0x0;ip=0x4012345;sp=0x23456;b=abc12345;kb=0x4000000
@@ -144,7 +156,7 @@ If the kernel doesn't yet supply build/offset data, **normal diagnosis, guided r
 
 ## Source-code lookup: how to make it operational
 
-**The website-side lookup and GitHub issue integration are implemented, but no real Australis kernel mapping is bundled. The present AU1 test format does not yet declare build metadata or the meaning of its words.** The `public/symbols/index.json` registry initially contains no builds. This is deliberate: a raw RIP value cannot be tied to a source line without a build-specific map. The C-backed Hydrogen `--debug` `.hymap.json` maps are **not** instruction-offset maps for Australis's freestanding `AUKR` binary.
+**The website-side lookup and GitHub issue integration are implemented, but no real Australis kernel mapping is bundled. The AU1 field meanings are confirmed, but the format does not currently contain build metadata.** The `public/symbols/index.json` registry initially contains no builds. This is deliberate: a raw RIP value cannot be tied to a source line without a build-specific map. The C-backed Hydrogen `--debug` `.hymap.json` maps are **not** instruction-offset maps for Australis's freestanding `AUKR` binary.
 
 To enable automatic lookup for a kernel build:
 

@@ -19,6 +19,8 @@ export default defineConfig({
           'sample-panic-qr.png',
           'sample-au1-qr.png',
           'sample-au1-qr.pgm',
+          'sample-au1-crash-qr.png',
+          'sample-au1-crash-qr.pgm',
           'known-issues/index.json',
         ]
         this.emitFile({
