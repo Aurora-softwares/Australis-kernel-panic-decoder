@@ -195,7 +195,7 @@ function downloadReport() {
         </div>
         <div><span class="brand-name">AUSTRALIS<span class="brand-dot">.</span></span><span class="brand-sub">SYSTEM DIAGNOSTICS</span></div>
       </div>
-      <div class="header-right"><span class="pulse-dot"></span><span>100% on-device</span><span class="header-version">V1.0</span></div>
+      <div class="header-right"><span class="pulse-dot"></span><span>100% on-device</span><span class="header-version">V1.1</span></div>
     </header>
 
     <main class="wrap">
@@ -277,6 +277,12 @@ function downloadReport() {
               <div class="result-state" :class="result.valid ? 'state-panic' : 'state-unknown'"><span class="status-glyph">{{ result.valid ? '!' : '?' }}</span>{{ result.valid ? 'PANIC DATA DECODED' : 'UNRECOGNISED INPUT' }}<span class="state-vector" v-if="result.vector !== null">VECTOR {{ result.vector }}</span></div>
               <h3 class="diagnosis-title">{{ result.title }}</h3>
               <p class="diagnosis-summary">{{ result.summary }}</p>
+              <div v-if="result.possibleCauses.length" class="possible-causes">
+                <h4>What might have caused it?</h4>
+                <p>These are possibilities, not confirmed diagnoses.</p>
+                <ul><li v-for="(cause, index) in result.possibleCauses" :key="index">{{ cause }}</li></ul>
+              </div>
+              <div class="next-evidence"><strong>How to find the actual cause</strong><p>{{ result.nextEvidence }}</p></div>
               <div class="certainty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 10v6m0-9h.01"/></svg>{{ result.certainty }}</div>
               <div class="result-divider"></div>
               <div class="results-subheading"><span>EVIDENCE</span><small>{{ result.findings.length }} FINDINGS</small></div>

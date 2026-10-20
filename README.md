@@ -1,5 +1,7 @@
 # Australis Panic Decoder
 
+**Version 1.1:** Added expanded plain-English explanations and suggested next debugging evidence for genuine kernel failures, including the supplied x86-64 #UD crash at `RIP=0xE135AF3`. Nine automated parser tests now cover the known serial panic formats.
+
 A mobile-friendly, entirely client-side **Vue 3 + Vite** web app for decoding **Australis OS** kernel panic QR codes and serial panic reports into understandable explanations. Deployable to **GitHub Pages** without a server or API key.
 
 ## Features
@@ -9,7 +11,8 @@ A mobile-friendly, entirely client-side **Vue 3 + Vite** web app for decoding **
 - Paste a native Australis panic report, compact AUP1 QR payload or JSON object.
 - Explain x86-64 exception vectors, including #PF (vector 14), #GP (vector 13), #UD (vector 6) and #DF (vector 8).
 - Decode page fault error-code bits and fault address `CR2`.
-- Explain possible causes and recommended checks **without pretending to know the exact culprit**.
+- Show a meaningful account of what happened, possible failure mechanisms, and **the missing evidence required to identify the culprit**. The decoder distinguishes kernel-level invalid opcodes from memory faults rather than simply displaying their vector name.
+- Flag malformed register names in pasted dumps (such as `R6`, which is not an x86-64 register) without assuming what the intended register was.
 - See registers, the original raw report, copy a diagnosis, or export a `.txt` file.
 - Private: no analytics, accounts, telemetry, uploads, remote API calls, or server-side processing.
 - Offline-capable after visiting once and caching the app. The layout still works with local system fonts when offline.
@@ -124,7 +127,7 @@ This versioning is a **proposal for kernel integration**, not a claim that the k
 4. Keep the plain text report and COM1 output readable if QR generation fails. A QR code is an optional recovery aid, not a substitute for the serial log.
 5. Add QEMU screenshot tests that decode the rendered QR and compare the payload against the retained saved exception frame.
 
-An accurate **source-line diagnosis** requires matching RIP to the correct kernel binary and symbols/map file. The current decoder offers architectural interpretation; it does not pretend to symbolicate addresses. A later upgrade could accept a local symbol map and match it to `build` (without any server).
+An accurate **source-line diagnosis** requires matching RIP to the correct kernel binary and symbols/map file. For example, for exception vector 6 the decoder explains why the system halted, distinguishes #UD from #PF, treats CR2 as unrelated, and gives a GDB instruction-byte inspection command for the saved RIP. The current decoder offers architectural interpretation; it does not pretend to symbolicate addresses. A later upgrade could accept a local symbol map and match it to `build` (without any server).
 
 ### Security & privacy
 

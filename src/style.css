@@ -17,3 +17,6 @@
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 .sample-qr-link{display:inline-block;color:#a4efd3;font-size:11px;font-weight:700;margin-top:10px}.sample-qr-link:hover{color:#fff}
+
+/* Crash hypotheses and actionable source-level follow-up. */
+.possible-causes{margin-top:19px;padding:15px 17px;background:#101e29;border:1px solid #29404c;border-radius:8px}.possible-causes h4{font-size:13px;color:#e0f4f0;margin:0 0 4px}.possible-causes p{color:#8ca7b4;font-size:11px;margin:0 0 10px}.possible-causes ul{padding-left:18px;margin:0}.possible-causes li{font-size:12px;line-height:1.6;color:#bfced8;margin:6px 0}.possible-causes li::marker{color:#88c9b6}.next-evidence{margin-top:15px;border-left:3px solid #87dcc1;background:#172e35;padding:13px 15px}.next-evidence strong{font-size:12px;color:#a6f0d7}.next-evidence p{font-size:12px;line-height:1.7;overflow-wrap:anywhere;color:#c0d5da;margin:6px 0 0}

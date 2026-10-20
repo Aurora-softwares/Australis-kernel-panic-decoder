@@ -27,7 +27,7 @@ const VECTORS = {
   3: ['Breakpoint', 'The CPU encountered a breakpoint instruction.', ['Check for an intentional INT3 or debugger breakpoint.', 'Inspect the instruction at RIP.']],
   4: ['Overflow', 'An overflow trap instruction reported arithmetic overflow.', ['Inspect the instruction and arithmetic values at RIP.']],
   5: ['BOUND range exceeded', 'A legacy bounds check failed.', ['Inspect index calculations and code generation around RIP.']],
-  6: ['Invalid opcode', 'The CPU encountered an instruction it could not execute.', ['Disassemble the code at RIP and check the compiler output.', 'Check CPU feature detection and executable memory integrity.']],
+  6: ['Invalid opcode', 'The CPU attempted to run machine code that it could not execute.', ['Capture the instruction bytes at the saved RIP from the crashed QEMU instance.', 'Map RIP to the exact matching kernel build and disassemble the surrounding code.', 'Check whether it is a deliberate UD2 trap, an unsupported CPU instruction, invalid compiler output, or a bad branch target.']],
   7: ['Device not available', 'The CPU could not execute a floating-point or SIMD operation in the current processor state.', ['Check FPU/SSE setup and context switching.', 'Inspect CR0/CR4 configuration.']],
   8: ['Double fault', 'A second exception occurred while the CPU was trying to handle an earlier exception.', ['Treat stack corruption or exception-handler failure as high-priority suspects.', 'Inspect the IDT, TSS/IST setup, and exception stack.']],
   10: ['Invalid TSS', 'The CPU found an invalid task-state segment or task switch state.', ['Inspect the GDT/TSS descriptor and error code.']],
@@ -165,6 +165,11 @@ function reportText(result) {
     `Diagnosis: ${result.title}`,
     `Interpretation: ${result.summary}`,
     `Certainty: ${result.certainty}`,
+    '',
+    'Possible explanations (not confirmed):',
+    ...(result.possibleCauses.length ? result.possibleCauses.map((item) => `- ${item}`) : ['- The report does not narrow this down further.']),
+    '',
+    `Evidence needed to identify the actual cause: ${result.nextEvidence}`,
     `Input: ${result.source}`,
     '',
     'Evidence:',
@@ -201,10 +206,27 @@ export function diagnosePanic(input) {
   const add = (label, value) => findings.push({ label, value })
   let title, summary, certainty
   let actions
+  let possibleCauses = []
+  let nextEvidence = 'Match the saved instruction pointer to the exact kernel build and inspect the surrounding code.'
 
   if (known) {
     title = vectorInfo ? vectorInfo[0] : `CPU exception ${vector}`
     summary = vectorInfo ? vectorInfo[1] : 'The processor raised an exception. The available vector identifies the event, but more crash context is needed to explain its cause.'
+    if (vector === 6) {
+      const location = fields.RIP ? ` at ${fields.RIP}` : ''
+      const privilege = numeric(fields.CS) !== null && (numeric(fields.CS) & 3) === 0
+        ? 'while executing privileged kernel code'
+        : 'while executing code'
+      summary = `Australis OS encountered invalid machine-code instruction bytes${location} ${privilege}. The processor raised x86-64 exception #UD (vector 6), and Australis stopped the kernel rather than continuing in an unsafe state. This is an instruction execution failure, not evidence of a page fault. The panic identifies WHERE execution failed, but not yet WHY those bytes were executed.`
+      possibleCauses = [
+        'Hydrogen or another code-generation stage emitted an instruction that this CPU cannot execute.',
+        'A jump or return landed inside data or in the middle of an instruction, perhaps because an address was wrong.',
+        'The kernel executed an intentional invalid-instruction trap (UD2), or machine code was overwritten or corrupted.',
+      ]
+      nextEvidence = fields.RIP
+        ? `Capture the bytes and disassembly at RIP ${fields.RIP} in the SAME crashed kernel build. In QEMU with GDB attached: x/16xb ${fields.RIP} then x/8i ${fields.RIP}. Map that runtime address to a kernel symbol or code offset. If the bytes are 0F 0B, investigate an intentional UD2 trap; if they decode as another instruction, check CPU feature support; if they look like data, investigate branch targets and code integrity.`
+        : 'Capture the saved RIP and the instruction bytes at that address, then match them to the correct kernel binary.'
+    }
     if (vector === 14) {
       const bits = numeric(fields.ERROR)
       const operation = bits === null ? 'access memory' : (bits & 16) ? 'execute code from memory' : (bits & 2) ? 'write to memory' : 'read from memory'
@@ -214,15 +236,25 @@ export function diagnosePanic(input) {
       if (fields.CR2 && isZeroHex(fields.CR2)) {
         summary += ' Address zero suggests a null pointer or the deliberate debug panic test; the report alone cannot distinguish them.'
       }
+      possibleCauses = (fields.CR2 && isZeroHex(fields.CR2))
+        ? ['A kernel pointer was null and code tried to dereference it.', 'The intentional debug panic test accessed address zero.', 'A pointer or address calculation produced zero.']
+        : ['The page was not mapped, or its permissions blocked the attempted access.', 'A pointer, allocation lifetime, or page-table setup error led to an invalid access.']
+      nextEvidence = `Inspect the memory access at RIP ${fields.RIP || '(not provided)'}, cross-reference CR2 and the page-fault error bits, and map that code to the matching kernel build.`
     }
     certainty = 'Exception type identified; root cause not proven'
     actions = vectorInfo ? [...vectorInfo[2]] : ['Disassemble the faulting instruction at RIP.', 'Inspect the CPU error code and saved register state.']
     add('Exception vector', `${vector} (${asHex(vector)})`)
     if (vector === 14) pageFaultFindings(fields, add)
-    else if (fields.ERROR) add('CPU error code', fields.ERROR)
-    if (vector === 13 && fields.CR2) add('About CR2', 'CR2 is only meaningful for page faults; it does not identify the cause of this general-protection fault.')
+    else if (vector === 6) add('Error code', 'Invalid-opcode (#UD) has no CPU-pushed error code. The zero shown by Australis is not a cause indicator.')
+    else if (fields.ERROR) add('Reported error code', fields.ERROR)
+    if (vector !== 14 && fields.CR2) add('About CR2', `CR2 is only meaningful for page faults. Its reported value (${fields.CR2}) does not identify the cause of exception vector ${vector}; it may be left over from an earlier page fault.`)
+    if (fields.CS && numeric(fields.CS) !== null) add('Execution privilege', (numeric(fields.CS) & 3) === 0 ? 'Ring 0 (kernel/supervisor)' : `Ring ${numeric(fields.CS) & 3} (user or less-privileged context)`)
     if (fields.RIP) add('Instruction pointer (RIP)', fields.RIP)
     if (fields.RSP) add('Stack pointer (RSP)', fields.RSP)
+    if (vector === 13) {
+      possibleCauses = ['A noncanonical address, bad segment-selector use, or another x86-64 protection rule was violated.', 'An instruction or control-transfer target was invalid.']
+      nextEvidence = `Disassemble the instruction at RIP ${fields.RIP || '(not provided)'} and inspect its operands, selector fields and relevant CPU state. CR2 does not locate #GP failures.`
+    }
     if (vector === 14 && fields.CR2 && isZeroHex(fields.CR2)) {
       actions.unshift('Check for a null pointer or deliberately unmapped page-zero access.')
     }
@@ -243,6 +275,7 @@ export function diagnosePanic(input) {
     actions = ['Confirm that the QR code contains a crash report rather than a link or unrelated text.', 'Use the Australis serial panic output or the documented AUP1 payload format.']
   }
 
+  if (/^\s*R6\s*[:=]/im.test(raw)) add('Register report anomaly', 'The report contains R6, which is not an x86-64 register name. This may be a typo for R8 in the panic formatter; it is not itself evidence of the crash cause.')
   if (fields.MESSAGE && known) add('Kernel message', fields.MESSAGE)
   for (const key of ['PID', 'PROCESS', 'BUILD', 'VERSION', 'TIME']) {
     if (fields[key]) add(key === 'TIME' ? 'Timestamp' : key, fields[key])
@@ -260,6 +293,8 @@ export function diagnosePanic(input) {
     certainty,
     findings,
     actions,
+    possibleCauses,
+    nextEvidence,
     raw,
   }
   result.report = reportText(result)

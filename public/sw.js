@@ -1,5 +1,5 @@
 /* Cache only same-origin application assets, never panic payloads or uploads. */
-const CACHE = 'australis-panic-decoder-v2'
+const CACHE = 'australis-panic-decoder-v3'
 const ROOT = new URL('./', self.registration.scope).href
 
 self.addEventListener('install', (event) => {
