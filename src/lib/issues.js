@@ -1,4 +1,5 @@
 import { issueSafeSource } from './source-lookup.js'
+import { safeContextBlock } from './issue-draft.js'
 /** Optional public GitHub issue lookup. Never transmit user-supplied payloads. */
 export const ISSUE_REPO = 'Aurora-softwares/Australis-OS'
 const API = 'https://api.github.com/search/issues'
@@ -35,7 +36,7 @@ export function issueSearchPage(result) {
   return query ? `${SITE}?q=${encodeURIComponent(query)}` : SITE
 }
 
-export function newIssueUrl(result, source = null, includePublicSource = false) {
+export function newIssueUrl(result, source = null, includePublicSource = false, context = {}) {
   if (!result?.valid) return null
   const name = publicIssueLabel(result)
   const vector = Number.isInteger(result.vector) && result.vector >= 0 && result.vector <= 255
@@ -66,7 +67,9 @@ export function newIssueUrl(result, source = null, includePublicSource = false) 
       '```',
       '',
     ] : []),
-    '### Additional context (optional)',
+    safeContextBlock(context),
+    '',
+    '### Other context (optional)',
     '<Share only information you are comfortable making public. Do NOT paste memory addresses, raw register dumps, tokens, personal information, or private logs.>',
     '',
     '---',

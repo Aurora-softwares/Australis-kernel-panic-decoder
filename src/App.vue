@@ -5,6 +5,10 @@ import { publicDiagnosis } from './lib/public-diagnosis.js'
 import { issueSearchPage, newIssueUrl, searchPublicIssues } from './lib/issues.js'
 import { scanImage, scanVideoFrame } from './lib/qr.js'
 import { lookupSource } from './lib/source-lookup.js'
+import { lookupKnownIssue } from './lib/known-issues.js'
+import { assessReport } from './lib/validation.js'
+import { DEFAULT_CONTEXT, recoveryPlan } from './lib/recovery.js'
+import { safeDiagnosticText, technicalDiagnosticText } from './lib/reports.js'
 
 const mode = ref('camera')
 const theme = ref('auto')
@@ -25,8 +29,18 @@ const relatedIssues = ref([])
 const sourceReport = ref(null)
 const sourceStatus = ref('idle')
 const includePublicSource = ref(false)
+const context = ref({ ...DEFAULT_CONTEXT })
+const approvedIssue = ref(false)
+const distinctIssue = ref(false)
+const privateExportApproved = ref(false)
+const knownResult = ref({ status: 'idle', match: null })
+const knownStatus = ref('idle')
 const plain = computed(() => result.value ? publicDiagnosis(result.value) : null)
-const newIssue = computed(() => newIssueUrl(result.value, sourceReport.value, includePublicSource.value))
+const newIssue = computed(() => newIssueUrl(result.value, sourceReport.value, includePublicSource.value, context.value))
+const assessment = computed(() => assessReport(result.value))
+const hasIdentifiedException = computed(() => Number.isInteger(result.value?.vector) && ((result.value.vector >= 0 && result.value.vector <= 31) || result.value.vector === 255))
+const recoverySteps = computed(() => recoveryPlan(result.value, context.value))
+const safeExport = computed(() => safeDiagnosticText(result.value, context.value, knownResult.value))
 const issuePreview = computed(() => newIssue.value ? new URL(newIssue.value).searchParams.get('body') : '')
 const searchPage = computed(() => issueSearchPage(result.value))
 const sampleQrUrl = `${import.meta.env.BASE_URL}sample-panic-qr.png`
@@ -40,6 +54,8 @@ let lookupAbort = null
 let lookupNumber = 0
 let sourceAbort = null
 let sourceNumber = 0
+let knownAbort = null
+let knownNumber = 0
 let copyTimer = null
 
 onMounted(() => {
@@ -58,6 +74,8 @@ function chooseTheme(value) {
 }
 
 function resetIssueLookup() {
+  approvedIssue.value = false
+  distinctIssue.value = false
   lookupNumber++
   lookupAbort?.abort()
   lookupAbort = null
@@ -74,6 +92,36 @@ function resetSource() {
   sourceStatus.value = 'idle'
   includePublicSource.value = false
 }
+
+function resetKnownIssue() {
+  knownNumber++
+  knownAbort?.abort()
+  knownAbort = null
+  knownResult.value = { status: 'idle', match: null }
+  knownStatus.value = 'idle'
+}
+
+async function findKnownIssue(report) {
+  resetKnownIssue()
+  if (!report?.valid) return
+  const requestNumber = ++knownNumber
+  const controller = new AbortController()
+  knownAbort = controller
+  knownStatus.value = 'loading'
+  try {
+    const match = await lookupKnownIssue(report, fetch, import.meta.env.BASE_URL, controller.signal)
+    if (requestNumber !== knownNumber) return
+    knownResult.value = match
+    knownStatus.value = match.status
+  } catch {
+    if (requestNumber !== knownNumber) return
+    knownResult.value = { status: 'unavailable', match: null }
+    knownStatus.value = 'unavailable'
+  } finally {
+    if (requestNumber === knownNumber) knownAbort = null
+  }
+}
+
 
 async function findSource(report) {
   resetSource()
@@ -111,9 +159,13 @@ function explain(text) {
   error.value = ''
   resetIssueLookup()
   resetSource()
+  resetKnownIssue()
+  context.value = { ...DEFAULT_CONTEXT }
+  privateExportApproved.value = false
   try {
     result.value = diagnosePanic(text)
     void findSource(result.value)
+    void findKnownIssue(result.value)
     input.value = text
     stopCamera()
     if (window.matchMedia('(max-width: 800px)').matches) {
@@ -139,6 +191,9 @@ function reset() {
   stopCamera()
   resetIssueLookup()
   resetSource()
+  resetKnownIssue()
+  context.value = { ...DEFAULT_CONTEXT }
+  privateExportApproved.value = false
   input.value = ''
   result.value = null
   fileName.value = ''
@@ -205,10 +260,13 @@ async function startCamera() {
 }
 
 watch(mode, (next) => { if (next !== 'camera') stopCamera() })
+// A changed draft always requires another explicit review.
+watch([context, includePublicSource], () => { approvedIssue.value = false }, { deep: true })
 onBeforeUnmount(() => {
   stopCamera()
   resetIssueLookup()
   resetSource()
+  resetKnownIssue()
   if (copyTimer) clearTimeout(copyTimer)
 })
 
@@ -258,13 +316,35 @@ async function checkIssues() {
 
 async function copySummary() {
   if (!result.value?.valid) return
-  const report = `${plain.value.title}\n${plain.value.description}\n${plain.value.guidance}\n\nException vector: ${Number.isInteger(result.value.vector) ? result.value.vector : 'not supplied'}\n\nNo raw crash data included.`
+  const report = safeExport.value
   try {
     await navigator.clipboard.writeText(report)
     copied.value = true
     if (copyTimer) clearTimeout(copyTimer)
     copyTimer = setTimeout(() => { copied.value = false }, 1800)
   } catch { error.value = 'Copying is unavailable. Try using your browser’s copy option.' }
+}
+
+function downloadText(filename, contents) {
+  const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function exportSafe() {
+  if (!result.value?.valid) return
+  downloadText('australis-crash-summary.txt', safeExport.value)
+}
+function exportPrivate() {
+  if (!result.value?.valid || !privateExportApproved.value) return
+  downloadText('australis-crash-private-technical.txt', technicalDiagnosticText(result.value, context.value, knownResult.value))
+  privateExportApproved.value = false
 }
 </script>
 
@@ -363,10 +443,49 @@ async function copySummary() {
           </div>
           <div v-else class="result-content" aria-live="polite">
             <span class="status status-warning"><span></span> Kernel panic detected</span>
+            <div v-if="assessment.level !== 'complete'" class="quality-warning" role="status">
+              <strong>{{ assessment.title }}</strong>
+              <p>{{ assessment.explanation }}</p>
+              <p>{{ assessment.next }}</p>
+              <button class="text-button" type="button" @click="reset">Scan again →</button>
+            </div>
             <h3>{{ plain.title }}</h3>
             <p class="explanation">{{ plain.description }}</p>
-            <div class="answer-box"><strong>What should I do?</strong><p>{{ plain.guidance }}</p></div>
-            <p class="accuracy-note">This identifies the type of error, but not necessarily its exact cause.</p>
+            <div class="confidence-grid" aria-label="Diagnostic confidence">
+              <div><span class="confidence-dot" :class="{ established: hasIdentifiedException }"></span><strong>{{ hasIdentifiedException ? 'Identified' : 'Incomplete' }}</strong><p>{{ hasIdentifiedException ? 'The exception reported by the kernel.' : 'Not enough information to identify a CPU exception.' }}</p></div>
+              <div><span class="confidence-dot possible"></span><strong>Possible</strong><p>The underlying cause still needs investigation.</p></div>
+              <div><span class="confidence-dot known" :class="{ established: knownStatus === 'matched' }"></span><strong>Known issue</strong><p>{{ knownStatus === 'matched' ? 'A curated crash signature matches.' : 'No confirmed matching record yet.' }}</p></div>
+            </div>
+            <div v-if="knownStatus === 'matched'" class="known-issue" aria-live="polite">
+              <span class="status status-success">{{ knownResult.match.status === 'resolved' ? 'Resolved issue' : knownResult.match.status === 'investigating' ? 'Under investigation' : 'Documented issue' }}</span>
+              <h4>{{ knownResult.match.title }}</h4>
+              <p>{{ knownResult.match.summary }}</p>
+              <p v-if="knownResult.match.recovery"><strong>Published guidance:</strong> {{ knownResult.match.recovery }}</p>
+              <a :href="knownResult.match.url" target="_blank" rel="noopener noreferrer">Read verified GitHub issue #{{ knownResult.match.issue }} ↗</a>
+              <p class="field-note">This is a maintainer-curated signature match, not independent proof of the same root cause.</p>
+            </div>
+            <p v-else-if="knownStatus === 'loading'" class="source-note" role="status">Checking published crash signatures…</p>
+            <p v-else class="source-note">{{ knownStatus === 'not-enough-data' ? 'A precise known-issue match needs a kernel build ID and code-base address. General diagnosis still works without them.' : 'No verified known-issue match was established.' }}</p>
+
+            <section class="recovery-questionnaire" aria-labelledby="recovery-heading">
+              <h4 id="recovery-heading">Help us suggest the next steps <span class="optional-tag">optional</span></h4>
+              <p class="field-note">Choose answers if you know them. Nothing is sent to GitHub unless you review a report.</p>
+              <div class="questions">
+                <label>When did it happen?
+                  <select v-model="context.stage"><option value="unknown">I'm not sure</option><option value="startup">During startup</option><option value="running">After startup</option></select>
+                </label>
+                <label>What were you doing?
+                  <select v-model="context.activity"><option value="unknown">I'm not sure</option><option value="launching">Opening an application</option><option value="other">Something else</option></select>
+                </label>
+                <label>Has it happened before?
+                  <select v-model="context.recurrence"><option value="unknown">I'm not sure</option><option value="first">This is the first time</option><option value="repeated">Yes, more than once</option></select>
+                </label>
+              </div>
+            </section>
+            <div class="answer-box"><strong>Recommended next steps</strong>
+              <ol class="recovery-steps"><li v-for="(step, index) in recoverySteps" :key="index">{{ step }}</li></ol>
+            </div>
+            <p class="accuracy-note">Confirmed exception ≠ confirmed underlying cause. Restarting does not fix a recurring bug.</p>
 
             <section class="source-lookup" aria-labelledby="source-heading">
               <div class="source-heading">
@@ -389,7 +508,8 @@ async function copySummary() {
 
             <section class="issue-lookup" aria-labelledby="issue-heading">
               <div class="issue-top"><span class="step-number small">03</span><div><h4 id="issue-heading">Has this been reported?</h4><p>Find potentially related reports on GitHub.</p></div></div>
-              <p class="privacy-inline"><span aria-hidden="true">◈</span> Only the error category is searched. Your QR code, registers and memory addresses stay private.</p>
+              <p class="privacy-inline"><span aria-hidden="true">◈</span> Your category-only GitHub search starts only when you press the button. No raw memory addresses or QR contents are transmitted.</p>
+              <p v-if="knownStatus === 'matched'" class="field-note">There is already a curated issue for this crash signature. Please read it before opening a duplicate.</p>
               <button class="button button-secondary full" type="button" :disabled="issueStatus === 'loading'" @click="checkIssues">
                 {{ issueStatus === 'loading' ? 'Checking GitHub…' : issueStatus === 'idle' ? 'Check existing issues' : 'Check again' }}
                 <span v-if="issueStatus !== 'loading'" aria-hidden="true">↗</span>
@@ -408,10 +528,17 @@ async function copySummary() {
                 <label class="share-source-label"><input v-model="includePublicSource" type="checkbox" /> Include the matched <strong>public source code excerpt</strong> in my GitHub issue</label>
                 <p class="field-note">Optional. You'll review the text on GitHub before publishing. Only public, commit-pinned source code is included — never raw crash data.</p>
               </div>
-              <details v-if="issueStatus !== 'idle'" class="issue-preview"><summary>Preview issue message</summary><pre>{{ issuePreview }}</pre></details>
+              <div v-if="issueStatus !== 'idle'" class="issue-preview">
+                <strong>Review your draft before opening GitHub</strong>
+                <p class="field-note">GitHub issues are public. Only the category, your questionnaire choices, and any source excerpt you explicitly approved appear below.</p>
+                <pre>{{ issuePreview }}</pre>
+                <label class="share-source-label"><input v-model="approvedIssue" type="checkbox" /> I have reviewed this public issue text and checked for existing reports.</label>
+                <label v-if="knownStatus === 'matched'" class="share-source-label known-override"><input v-model="distinctIssue" type="checkbox" /> I read the linked known issue and believe this is a different problem.</label>
+              </div>
               <div v-if="issueStatus !== 'idle'" class="issue-footer">
                 <a :href="searchPage" target="_blank" rel="noopener noreferrer">Browse GitHub issues ↗</a>
-                <a v-if="newIssue" class="button button-primary" :href="newIssue" target="_blank" rel="noopener noreferrer">Create an issue →</a>
+                <a v-if="newIssue && approvedIssue && (knownStatus !== 'matched' || distinctIssue)" class="button button-primary" :href="newIssue" target="_blank" rel="noopener noreferrer">Open GitHub issue draft →</a>
+                <span v-else class="field-note">{{ knownStatus === 'matched' && !distinctIssue ? 'Please review the already-documented issue before opening another.' : 'Review and tick the checkbox above to continue.' }}</span>
               </div>
             </section>
 
@@ -423,7 +550,16 @@ async function copySummary() {
                 <pre>{{ result.raw }}</pre>
               </div>
             </details>
-            <button class="text-button copy-summary" type="button" @click="copySummary">{{ copied ? 'Summary copied ✓' : 'Copy safe summary ↗' }}</button>
+            <section class="report-exports" aria-label="Save diagnostic results">
+              <h4>Save your results</h4>
+              <p class="field-note">Safe reports omit private crash data. You can choose a separate private export for debugging.</p>
+              <div class="export-actions"><button class="button button-secondary" type="button" @click="exportSafe">Download safe report (.txt)</button><button class="button button-subtle" type="button" @click="copySummary">{{ copied ? 'Copied ✓' : 'Copy summary' }}</button></div>
+              <details class="private-export"><summary>Export private technical report (advanced)</summary>
+                <p>This export includes raw panic text, addresses and registers. Do not publish it without examining and redacting sensitive details.</p>
+                <label class="share-source-label"><input v-model="privateExportApproved" type="checkbox" /> I understand this file contains technical crash data.</label>
+                <button class="button button-subtle" type="button" :disabled="!privateExportApproved" @click="exportPrivate">Download private report (.txt)</button>
+              </details>
+            </section>
           </div>
         </section>
       </div>
@@ -433,7 +569,7 @@ async function copySummary() {
         <div class="guide-grid">
           <div class="guide-item"><span>1</span><h3>Find the QR code</h3><p>When Australis displays an error screen, look for its diagnostic QR code.</p></div>
           <div class="guide-item"><span>2</span><h3>Scan or upload it</h3><p>Open this website on your phone and scan the code. You can also upload a picture or paste the message.</p></div>
-          <div class="guide-item"><span>3</span><h3>Review the result</h3><p>Read the explanation. If the crash repeats, check GitHub for an existing issue or create a report.</p></div>
+          <div class="guide-item"><span>3</span><h3>Follow the next steps</h3><p>Answer optional recovery questions, save a safe summary, or check GitHub for existing reports before creating a new one.</p></div>
         </div>
         <div class="guide-tip"><strong>No QR code?</strong> Use the <button type="button" class="text-button" @click="goToPaste">Paste text</button> option, or <a :href="sampleQrUrl" target="_blank" rel="noopener noreferrer">view an example QR code</a> to try the scanner.</div>
       </section>

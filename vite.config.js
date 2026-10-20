@@ -17,6 +17,7 @@ export default defineConfig({
           'favicon.svg',
           'manifest.webmanifest',
           'sample-panic-qr.png',
+          'known-issues/index.json',
         ]
         this.emitFile({
           type: 'asset',
