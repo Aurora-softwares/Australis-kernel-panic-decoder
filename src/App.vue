@@ -4,6 +4,7 @@ import { diagnosePanic, SAMPLE_PANIC } from './lib/diagnose.js'
 import { publicDiagnosis } from './lib/public-diagnosis.js'
 import { issueSearchPage, newIssueUrl, searchPublicIssues } from './lib/issues.js'
 import { scanImage, scanVideoFrame } from './lib/qr.js'
+import { lookupSource } from './lib/source-lookup.js'
 
 const mode = ref('camera')
 const theme = ref('auto')
@@ -21,8 +22,12 @@ const copied = ref(false)
 const issueStatus = ref('idle')
 const issueError = ref('')
 const relatedIssues = ref([])
+const sourceReport = ref(null)
+const sourceStatus = ref('idle')
+const includePublicSource = ref(false)
 const plain = computed(() => result.value ? publicDiagnosis(result.value) : null)
-const newIssue = computed(() => newIssueUrl(result.value))
+const newIssue = computed(() => newIssueUrl(result.value, sourceReport.value, includePublicSource.value))
+const issuePreview = computed(() => newIssue.value ? new URL(newIssue.value).searchParams.get('body') : '')
 const searchPage = computed(() => issueSearchPage(result.value))
 const sampleQrUrl = `${import.meta.env.BASE_URL}sample-panic-qr.png`
 
@@ -33,6 +38,8 @@ let frameCanvas = null
 let scanComplete = false
 let lookupAbort = null
 let lookupNumber = 0
+let sourceAbort = null
+let sourceNumber = 0
 let copyTimer = null
 
 onMounted(() => {
@@ -59,6 +66,35 @@ function resetIssueLookup() {
   issueError.value = ''
 }
 
+function resetSource() {
+  sourceNumber++
+  sourceAbort?.abort()
+  sourceAbort = null
+  sourceReport.value = null
+  sourceStatus.value = 'idle'
+  includePublicSource.value = false
+}
+
+async function findSource(report) {
+  resetSource()
+  if (!report?.valid) return
+  const requestNumber = ++sourceNumber
+  const controller = new AbortController()
+  sourceAbort = controller
+  sourceStatus.value = 'loading'
+  try {
+    const lookup = await lookupSource(report, fetch, import.meta.env.BASE_URL, controller.signal)
+    if (requestNumber !== sourceNumber) return
+    sourceReport.value = lookup
+    sourceStatus.value = lookup.status
+  } catch {
+    if (requestNumber !== sourceNumber) return
+    sourceStatus.value = 'error'
+  } finally {
+    if (requestNumber === sourceNumber) sourceAbort = null
+  }
+}
+
 function stopCamera() {
   cameraActive.value = false
   scanComplete = true
@@ -74,8 +110,10 @@ function stopCamera() {
 function explain(text) {
   error.value = ''
   resetIssueLookup()
+  resetSource()
   try {
     result.value = diagnosePanic(text)
+    void findSource(result.value)
     input.value = text
     stopCamera()
     if (window.matchMedia('(max-width: 800px)').matches) {
@@ -100,6 +138,7 @@ function trySample() {
 function reset() {
   stopCamera()
   resetIssueLookup()
+  resetSource()
   input.value = ''
   result.value = null
   fileName.value = ''
@@ -169,6 +208,7 @@ watch(mode, (next) => { if (next !== 'camera') stopCamera() })
 onBeforeUnmount(() => {
   stopCamera()
   resetIssueLookup()
+  resetSource()
   if (copyTimer) clearTimeout(copyTimer)
 })
 
@@ -328,6 +368,25 @@ async function copySummary() {
             <div class="answer-box"><strong>What should I do?</strong><p>{{ plain.guidance }}</p></div>
             <p class="accuracy-note">This identifies the type of error, but not necessarily its exact cause.</p>
 
+            <section class="source-lookup" aria-labelledby="source-heading">
+              <div class="source-heading">
+                <h4 id="source-heading">Source code lookup</h4>
+                <span v-if="sourceStatus === 'matched'" class="source-indicator">Source matched</span>
+              </div>
+              <p v-if="sourceStatus === 'loading'" class="source-note" role="status">Looking for an exact public kernel build map…</p>
+              <template v-else-if="sourceStatus === 'matched'">
+                <p class="source-note">A public source location was found for this build. This identifies a code location, not necessarily the cause of the crash.</p>
+                <a class="source-link" :href="sourceReport.location.url" target="_blank" rel="noopener noreferrer">{{ sourceReport.location.file }}:{{ sourceReport.location.line }} ↗</a>
+                <span class="field-note">{{ sourceReport.location.precision === 'line' ? 'Line-level mapping' : 'Function-level mapping (approximate location)' }}</span>
+                <details class="source-preview"><summary>View public source excerpt</summary><pre>{{ sourceReport.location.snippet.map((line, i) => `${sourceReport.location.snippetStart + i}: ${line}`).join('\n') }}</pre></details>
+              </template>
+              <p v-else-if="sourceStatus === 'no-build'" class="source-note">Source lookup isn't available for this report yet. A kernel build identifier is needed to match code safely; an OS release version is not required.</p>
+              <p v-else-if="sourceStatus === 'no-base'" class="source-note">A matching build was found, but its runtime code address is missing. Australis will need to include a code-base address in the QR code.</p>
+              <p v-else-if="sourceStatus === 'no-rip'" class="source-note">The report doesn't contain an instruction address, so source code cannot be identified.</p>
+              <p v-else-if="sourceStatus === 'not-found'" class="source-note">No source range matched this instruction. We won't guess which function caused the crash.</p>
+              <p v-else class="source-note">No verified public source map is available for this build yet. Normal diagnosis still works.</p>
+            </section>
+
             <section class="issue-lookup" aria-labelledby="issue-heading">
               <div class="issue-top"><span class="step-number small">03</span><div><h4 id="issue-heading">Has this been reported?</h4><p>Find potentially related reports on GitHub.</p></div></div>
               <p class="privacy-inline"><span aria-hidden="true">◈</span> Only the error category is searched. Your QR code, registers and memory addresses stay private.</p>
@@ -345,6 +404,11 @@ async function copySummary() {
               <div v-else-if="issueStatus === 'none'" class="lookup-result" aria-live="polite"><strong>No matching public issues found</strong><p>That doesn't guarantee the problem has never been reported. You can create a new report below.</p></div>
               <div v-else-if="issueStatus === 'error'" class="lookup-result" role="status"><strong>Search couldn't be completed</strong><p>{{ issueError }}</p></div>
 
+              <div v-if="issueStatus !== 'idle' && sourceStatus === 'matched'" class="issue-source-option">
+                <label class="share-source-label"><input v-model="includePublicSource" type="checkbox" /> Include the matched <strong>public source code excerpt</strong> in my GitHub issue</label>
+                <p class="field-note">Optional. You'll review the text on GitHub before publishing. Only public, commit-pinned source code is included — never raw crash data.</p>
+              </div>
+              <details v-if="issueStatus !== 'idle'" class="issue-preview"><summary>Preview issue message</summary><pre>{{ issuePreview }}</pre></details>
               <div v-if="issueStatus !== 'idle'" class="issue-footer">
                 <a :href="searchPage" target="_blank" rel="noopener noreferrer">Browse GitHub issues ↗</a>
                 <a v-if="newIssue" class="button button-primary" :href="newIssue" target="_blank" rel="noopener noreferrer">Create an issue →</a>

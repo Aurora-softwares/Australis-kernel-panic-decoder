@@ -1,15 +1,17 @@
 # Australis Crash Diagnostics
 
-A small, mobile-friendly Vue 3 application for **public** Australis OS kernel panic diagnosis. It reads a panic QR code or text locally, provides a safe plain-English explanation, and can optionally check public [Australis OS GitHub issues](https://github.com/Aurora-softwares/Australis-OS/issues) for potentially related reports.
+Version 2.1. A small, mobile-friendly Vue 3 application for **public** Australis OS kernel panic diagnosis. It reads a panic QR code or text locally, provides a safe plain-English explanation, and can optionally check public [Australis OS GitHub issues](https://github.com/Aurora-softwares/Australis-OS/issues) for potentially related reports.
 
 ## Features
 
 - **Three simple inputs:** scan live QR through the camera, upload a screenshot, or paste panic text. A sample report and sample QR are included.
-- **Public-friendly results:** no compiler implementation details, internal paths, instruction addresses, or raw register dumps on the main screen. Raw diagnostics are only available behind the **Technical details (optional)** disclosure, locally in the browser.
+- **Public-friendly results:** no compiler implementation details, internal paths, instruction addresses, or raw register dumps on the main screen. Raw diagnostics are only available behind the **Technical details (optional)** disclosure, locally in the browser. Public source excerpts are shown only when a valid mapping exists, and must be deliberately expanded.
 - **System light/dark mode:** default **Auto** follows the operating system; visitors can choose Light or Dark. Only the appearance preference is saved locally.
-- **GitHub issue lookup (explicit opt-in):** tap **Check existing issues** to query GitHub's public API using **only the error category**, e.g. `invalid opcode`. The raw QR, RIP, registers, kernel messages, timestamps, build and any personal details are **not sent** to GitHub.
+- **GitHub issue lookup (explicit opt-in):** tap **Check existing issues** to query GitHub's public API using **only the error category**, e.g. `invalid opcode`. The raw QR, RIP, registers, kernel messages, timestamps, build and any personal details are **not sent** to GitHub. Loading a published source map requests only the mapped static build file on the website. GitHub receives source code in the issue URL only after the user explicitly selects the sharing checkbox and clicks the issue link.
 - **Related ≠ identical:** search results are labelled *potentially related*. If the query returns nothing, the UI clearly says a match was not found, rather than asserting that the bug is new.
-- **Safe issue draft:** if visitors choose to open a report, the GitHub **Create an issue** link pre-fills a descriptive error name, numeric exception vector (when present), and prompts for reproduction steps. It **never** embeds raw diagnostic values, addresses, log contents or personal data. An OS version is **not required**.
+- **Automatic public source lookup (when a matching kernel map exists):** matches a recorded build fingerprint, runtime code base and RIP to a commit-pinned, published **public** source map. It can display a linked source location and short code excerpt. It **never guesses** source from RIP alone.
+- **Optional source in GitHub issue:** users can preview and explicitly select a small, verified public source excerpt for the pre-filled issue. It is never shared by default.
+- **Safe issue draft:** if visitors choose to open a report, the GitHub **Create an issue** link pre-fills a descriptive error name, numeric exception vector (when present), and prompts for reproduction steps. It **never** embeds raw diagnostic values, addresses, log contents or personal data; an explicitly approved snippet of already-public kernel source can be added. An OS version is **not required**.
 - Runs as a static site; no account, database, private GitHub token, AI service, or server required.
 
 ### Privacy considerations
@@ -21,9 +23,9 @@ QR decoding and diagnosis happen entirely in the browser. GitHub search is only 
 1. Look for the diagnostic QR on the Australis crash screen.
 2. Open the website on a phone, choose **Camera**, tap **Start scanning**, then point at the QR code. Alternatively **Upload image** or **Paste text**.
 3. Read what happened and what to do next. If the crash was unexpected, tap **Check existing issues**.
-4. Review any related reports. If needed, choose **Create an issue**, describe what you were doing, and review the draft before publishing it.
+4. Review any related reports. If a verified source match appears, optionally expand its excerpt and tick **Include public source code**. Choose **Create an issue**, review the draft on GitHub and publish only if you are happy with it.
 
-Camera use requires HTTPS or localhost and camera permission. GitHub Pages serves HTTPS. The scanner accepts native Australis console panic text, JSON payloads, and the compact `AUP1` diagnostic format; no OS version is required.
+Camera use requires HTTPS or localhost and camera permission. GitHub Pages serves HTTPS. The scanner accepts native Australis console panic text, JSON payloads, and the compact `AUP1` diagnostic format; no OS release version is required. Accurate source code lookup additionally requires a build fingerprint and code-base address.
 
 ## Local development
 
@@ -65,15 +67,57 @@ RIP     =0x0000000000012345
 RSP     =0x0000000000023456
 ```
 
-Recommended short QR payload:
+Recommended short QR payload (source lookup also uses optional `b` and `kb` fields):
 
 ```text
-AUP1;v=6;e=0x0;ip=0x12345;sp=0x23456
+AUP1;v=6;e=0x0;ip=0x4012345;sp=0x23456;b=abc12345;kb=0x4000000
 ```
 
-The **AUP1 prefix is a format version**, not an Australis OS release version. Fields `v` (CPU vector), `e` (error code), `ip` (RIP), `sp` (RSP), and optional `a` (CR2, useful for vector 14) are supported. All OS build/version fields are optional. Keep QR generation allocation-free and preserve the serial text fallback on panic.
+The **AUP1 prefix is a format version**, not an Australis OS release version. Fields `v` (CPU vector), `e` (error code), `ip` (RIP), `sp` (RSP), and optional `a` (CR2, useful for vector 14) are supported. `b` is an immutable build fingerprint (not a release version). `kb` is the **runtime address of the first executable kernel code byte** (not the allocation base or AUKR header). Source resolution requires `ip`, `b`, and either `kb` or a verified fixed-code-base declaration. QR input without these fields still receives a normal exception diagnosis. Keep QR generation allocation-free and preserve the serial text fallback on panic.
 
-The parser provides exception-type diagnosis, not provable source-level causation. A matching exception category on GitHub is **not proof** two crashes share a root cause. Accurate symbol matching requires an exact binary/build identifier, which is intentionally not needed or publicly exposed by this app.
+The parser provides exception-type diagnosis, not provable source-level causation. A matching exception category on GitHub is **not proof** two crashes share a root cause. Accurate symbol matching requires an exact binary/build fingerprint and executable image base. These are not required for basic diagnosis. Published maps reveal binary offsets, public file names and short snippets; publish **only after reviewing** their visibility implications.
+
+## Source-code lookup: how to make it operational
+
+**The website-side lookup and GitHub issue integration are implemented, but no real Australis kernel mapping is bundled.** The `public/symbols/index.json` registry initially contains no builds. This is deliberate: a raw RIP value cannot be tied to a source line without a build-specific map. The C-backed Hydrogen `--debug` `.hymap.json` maps are **not** instruction-offset maps for Australis's freestanding `AUKR` binary.
+
+To enable automatic lookup for a kernel build:
+
+1. During kernel compilation, emit **verified instruction ranges** for the exact `KERNEL.BIN`, starting at the first executable code byte (offset zero); associate each range with a public `.hy` file and function/source line. Mark ranges `"precision": "function"` if they identify only the function. Use `"precision": "line"` only for genuine instruction-to-line mapping. This requires an additional kernel compiler/codegen capability if it isn't already available. **Do not fabricate offsets or reuse the host C `.hymap.json`.**
+2. Generate a small build fingerprint from the kernel image (e.g. the first 12–16 hex characters of its SHA-256) and embed it in the QR payload as `b=...`. Record the **runtime executable code-start address** in the QR as `kb=0x...`, alongside `ip` (RIP). The build fingerprint isn't an OS release/version string.
+3. Make an input map, e.g. `build/kernel-addresses.json` (format below), using the *exact source commit* used to generate the binary. This input map must be emitted or verified by your compiler/tooling, not constructed from guesses:
+
+```json
+{
+  "schema": 1,
+  "build": "abc12345",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "entries": [
+    {
+      "start": "0x1000", "end": "0x1020",
+      "path": "src/kernel/KernelMain.hy", "line": 38,
+      "precision": "function", "symbol": "KernelMain.Run"
+    }
+  ]
+}
+```
+
+These values are **illustrative**, not a mapping for any existing build. Ranges must not overlap. `start` is inclusive, `end` exclusive. Do not include private files, absolute build paths, or secret-bearing source text.
+
+4. With a local checkout of the publicly visible Australis OS repository, generate the publishable registry and snippets:
+
+```sh
+node tools/publish-source-map.mjs \
+  --map build/kernel-addresses.json \
+  --repo ../Australis-OS \
+  --out public/symbols
+```
+
+The tool verifies the repository origin, pins source to the provided 40-character Git commit, reads `.hy` source directly from that commit, validates ranges and file paths, includes up to five lines per match, and updates `public/symbols/index.json`. Commit the generated `public/symbols/<build-id>.json` and index to your website repository, then redeploy.
+
+**Public visibility:** GitHub Pages is public. Published maps reveal program offsets, source paths, and snippets; treat them as public debugging symbols. Never publish maps for private components. The website does not access private repositories, and its public source snippets are shown in an issue only after a user opts in.
+
+**Limitation:** Even a matched instruction range proves only where execution stopped in a specific build; it does not prove that source line contains the underlying defect. Userland addresses cannot be resolved with a kernel-only map. A mismatched or missing map returns “source unavailable,” never a guessed code location.
 
 ## Offline use and verification
 

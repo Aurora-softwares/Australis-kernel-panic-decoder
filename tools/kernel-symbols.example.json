@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "build": "example001",
+  "commit": "0000000000000000000000000000000000000000",
+  "entries": [
+    {
+      "start": "0x100",
+      "end": "0x120",
+      "path": "src/kernel/KernelMain.hy",
+      "line": 10,
+      "precision": "function",
+      "symbol": "KernelMain.Run"
+    }
+  ]
+}

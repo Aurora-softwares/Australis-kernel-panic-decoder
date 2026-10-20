@@ -1,5 +1,5 @@
 /* Cache only same-origin application assets, never panic payloads or uploads. */
-const CACHE = 'australis-panic-decoder-v4'
+const CACHE = 'australis-panic-decoder-v5'
 const ROOT = new URL('./', self.registration.scope).href
 
 self.addEventListener('install', (event) => {
@@ -33,6 +33,16 @@ self.addEventListener('fetch', (event) => {
       }
       return response
     }).catch(() => caches.match(ROOT)))
+    return
+  }
+  if (url.pathname.startsWith(new URL('symbols/', ROOT).pathname)) {
+    event.respondWith(fetch(event.request, { cache: 'no-cache' }).then((response) => {
+      if (response.ok) {
+        const copy = response.clone()
+        caches.open(CACHE).then(cache => cache.put(event.request, copy))
+      }
+      return response
+    }).catch(() => caches.match(event.request)))
     return
   }
   event.respondWith(caches.match(event.request).then((cached) => cached || fetch(event.request).then((response) => {
