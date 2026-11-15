@@ -19,7 +19,7 @@ jobs:
   build:
     # Protect against a manual dispatch from Development or any other branch.
     if: github.ref == 'refs/heads/Release'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
           path: ./dist
   deploy:
     if: github.ref == 'refs/heads/Release'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     needs: build
     environment:
       name: github-pages
